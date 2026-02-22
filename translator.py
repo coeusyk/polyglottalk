@@ -99,12 +99,14 @@ class Translator:
                 )
                 continue
 
-            logger.info(
+            logger.debug(
                 "Translation done (%.3fs) chunk #%d: %r",
                 elapsed,
                 item.chunk_id,
                 translated,
             )
+            # Live console output — print immediately before queuing
+            print(f"[\u2192{self._target_lang.upper()}  #{item.chunk_id:>4d}] {translated}", flush=True)
 
             segment = TranslatedSegment(
                 chunk_id=item.chunk_id,
@@ -239,12 +241,26 @@ class Translator:
     # ── Queue helper ────────────────────────────────────────────────────────
 
     def _put(self, segment: TranslatedSegment) -> None:
-        """Push to tts_queue; retry (with stop_event check) on Full."""
-        while not self._stop_event.is_set():
+        """Push to tts_queue with drop-oldest strategy on Full.
+
+        Never blocks — if the queue is full the oldest pending translation
+        is evicted so TTS always speaks the most recent output.
+        """
+        try:
+            self._tts_queue.put_nowait(segment)
+        except queue.Full:
             try:
-                self._tts_queue.put(segment, timeout=config.QUEUE_PUT_TIMEOUT)
-                return
+                dropped = self._tts_queue.get_nowait()
+                logger.warning(
+                    "tts_queue full — evicted oldest chunk #%d to insert chunk #%d",
+                    dropped.chunk_id,
+                    segment.chunk_id,
+                )
+            except queue.Empty:
+                pass
+            try:
+                self._tts_queue.put_nowait(segment)
             except queue.Full:
-                logger.debug(
-                    "tts_queue full — retrying put for chunk #%d", segment.chunk_id
+                logger.warning(
+                    "tts_queue still full — dropping chunk #%d", segment.chunk_id
                 )

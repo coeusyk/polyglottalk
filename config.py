@@ -16,7 +16,9 @@ os.environ.setdefault("CT2_INTER_THREADS", "1")
 SAMPLE_RATE: int = 16000          # Hz — Whisper expects 16 kHz
 CHUNK_DURATION: float = 2.5       # seconds per ASR chunk
 BLOCK_SIZE: int = int(SAMPLE_RATE * CHUNK_DURATION)  # 40 000 samples
-RMS_SILENCE_THRESHOLD: float = 0.01  # chunks below this RMS are dropped
+# WSLg RDP audio bridge delivers lower amplitude than native Linux mics.
+# Measured speech RMS ~0.0003; true silence ~0.00001. Threshold at 0.0001.
+RMS_SILENCE_THRESHOLD: float = 0.0001  # chunks below this RMS are dropped
 
 # ── Queue ───────────────────────────────────────────────────────────────────
 QUEUE_MAXSIZE: int = 2            # backpressure limit per inter-stage queue
@@ -41,3 +43,22 @@ TTS_RATE: int = 175               # words per minute
 # ── Logging ─────────────────────────────────────────────────────────────────
 LOG_FORMAT: str = "[%(asctime)s %(threadName)s] %(levelname)s %(message)s"
 LOG_LEVEL: str = "INFO"
+
+# ── ASR hallucination blocklist ──────────────────────────────────────────────
+# faster-whisper commonly outputs these phrases on silence or near-silence.
+# Comparisons are case-insensitive and strip punctuation/whitespace.
+ASR_HALLUCINATION_BLOCKLIST: frozenset = frozenset({
+    "thank you",
+    "thanks",
+    "thanks for watching",
+    "thank you for watching",
+    "you",
+    "bye",
+    "bye bye",
+    "goodbye",
+    "please subscribe",
+    "like and subscribe",
+    "see you next time",
+    ".",
+    "",
+})

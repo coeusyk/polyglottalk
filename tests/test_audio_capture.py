@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 import config  # sets os.environ first
 import numpy as np
+import sounddevice as sd
 from audio_capture import AudioCapture
 from models import AudioChunk
 
@@ -29,14 +30,22 @@ RECORD_SECONDS = 5          # Record this many seconds
 OUTPUT_WAV = "tests/test_output.wav"
 RMS_MIN = 1e-6  # Just verify audio isn't pure zeros — silent rooms have background noise ~1e-5
 
+# Check if audio devices are available
+def _has_audio_device() -> bool:
+    try:
+        sd.query_devices()
+        return True
+    except (sd.PortAudioError, OSError):
+        return False
+
 pytestmark = pytest.mark.skipif(
-    os.environ.get("CI") == "true",
-    reason="Live microphone test — skip in CI",
+    os.environ.get("CI") == "true" or not _has_audio_device(),
+    reason="Live microphone test — skip in CI or when no audio device",
 )
 
 
 def test_audio_capture_live() -> None:
-    """Record 3 s from mic, save to WAV, assert non-silence."""
+    """Record 5s from mic, save to WAV, assert non-silence."""
     audio_queue: queue.Queue = queue.Queue(maxsize=10)
     stop_event = threading.Event()
 

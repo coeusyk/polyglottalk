@@ -14,6 +14,8 @@ import queue
 import threading
 import time
 
+import re
+
 import numpy as np
 
 import config
@@ -60,6 +62,7 @@ class ASREngine:
         logger.info("ASR model loaded in %.1fs", time.perf_counter() - t0)
 
         self._last_text: str = ""
+        self._heard_speech: bool = False  # becomes True after first non-silent chunk
 
     # ── Thread target ───────────────────────────────────────────────────────
 
@@ -79,9 +82,13 @@ class ASREngine:
             # ── Silence filter ─────────────────────────────────────────────
             rms = float(np.sqrt(np.mean(item.audio ** 2)))
             if rms < config.RMS_SILENCE_THRESHOLD:
-                logger.debug(
-                    "Chunk #%d skipped — silent (RMS=%.4f)", item.chunk_id, rms
-                )
+                if self._heard_speech:
+                    logger.info(
+                        "Chunk #%d silent after speech — stopping pipeline.",
+                        item.chunk_id,
+                    )
+                    self._stop_event.set()
+                    break
                 continue
 
             # ── Transcribe ─────────────────────────────────────────────────
@@ -91,6 +98,14 @@ class ASREngine:
 
             if not text:
                 logger.debug("Chunk #%d produced empty transcript.", item.chunk_id)
+                continue
+
+            # ── Hallucination blocklist filter ─────────────────────────────
+            normalized = re.sub(r"[^\w\s]", "", text).strip().lower()
+            if normalized in config.ASR_HALLUCINATION_BLOCKLIST:
+                logger.debug(
+                    "Chunk #%d blocked hallucination: %r", item.chunk_id, text
+                )
                 continue
 
             # ── Duplicate / hallucination filter ───────────────────────────
@@ -103,12 +118,15 @@ class ASREngine:
                 continue
 
             self._last_text = text
-            logger.info(
+            self._heard_speech = True
+            logger.debug(
                 "Transcription done (%.3fs) chunk #%d: %r",
                 elapsed,
                 item.chunk_id,
                 text,
             )
+            # Live console output — print immediately before queuing
+            print(f"[ASR   #{item.chunk_id:>4d}] {text}", flush=True)
 
             segment = TextSegment(
                 chunk_id=item.chunk_id,
@@ -139,10 +157,26 @@ class ASREngine:
         return text
 
     def _put(self, segment: TextSegment) -> None:
-        """Push to text_queue; retry (with stop_event check) on Full."""
-        while not self._stop_event.is_set():
+        """Push to text_queue with drop-oldest strategy on Full.
+
+        Never blocks — if the queue is full the oldest pending transcription
+        is evicted so the translator always sees the most recent text.
+        """
+        try:
+            self._text_queue.put_nowait(segment)
+        except queue.Full:
             try:
-                self._text_queue.put(segment, timeout=config.QUEUE_PUT_TIMEOUT)
-                return
+                dropped = self._text_queue.get_nowait()
+                logger.warning(
+                    "text_queue full — evicted oldest chunk #%d to insert chunk #%d",
+                    dropped.chunk_id,
+                    segment.chunk_id,
+                )
+            except queue.Empty:
+                pass
+            try:
+                self._text_queue.put_nowait(segment)
             except queue.Full:
-                logger.debug("text_queue full — retrying put for chunk #%d", segment.chunk_id)
+                logger.warning(
+                    "text_queue still full — dropping chunk #%d", segment.chunk_id
+                )

@@ -119,10 +119,27 @@ class AudioCapture:
     # ── Helpers ─────────────────────────────────────────────────────────────
 
     def _push(self, item: AudioChunk) -> None:
-        """Push chunk to audio_queue; DROP silently if queue is full."""
+        """Push chunk to audio_queue with drop-oldest strategy on Full.
+
+        If the queue is full the oldest unprocessed chunk is evicted so
+        ASR always sees the most recent audio.  This method never blocks,
+        preserving true pipeline parallelism.
+        """
         try:
-            self._audio_queue.put(item, timeout=config.QUEUE_PUT_TIMEOUT)
+            self._audio_queue.put_nowait(item)
         except queue.Full:
-            logger.warning(
-                "Dropping audio chunk #%d — pipeline backed up", item.chunk_id
-            )
+            try:
+                dropped = self._audio_queue.get_nowait()
+                logger.warning(
+                    "audio_queue full — evicted oldest chunk #%d to insert chunk #%d",
+                    dropped.chunk_id,
+                    item.chunk_id,
+                )
+            except queue.Empty:
+                pass
+            try:
+                self._audio_queue.put_nowait(item)
+            except queue.Full:
+                logger.warning(
+                    "audio_queue still full — dropping chunk #%d", item.chunk_id
+                )

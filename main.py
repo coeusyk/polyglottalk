@@ -64,6 +64,10 @@ def main() -> None:
         format=config.LOG_FORMAT,
         stream=sys.stdout,
     )
+    # Suppress faster-whisper's verbose "Processing audio with duration" messages
+    logging.getLogger("faster_whisper").setLevel(logging.WARNING)
+    # Suppress pyttsx3 engine finding noise ("aplay not found", "espeak not found", etc.)
+    logging.getLogger("pyttsx3.engine").setLevel(logging.ERROR)
 
     print("=" * 60)
     print(" PolyglotTalk v0.1 — Offline Speech-to-Speech Translation")

@@ -74,7 +74,7 @@ class TTSEngine:
 
             # End-to-end latency: from audio capture to speech completion
             e2e = time.perf_counter() - item.timestamp
-            logger.info(
+            logger.debug(
                 "Speech done (%.3fs tts, %.3fs e2e) chunk #%d: %r",
                 elapsed,
                 e2e,

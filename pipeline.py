@@ -124,10 +124,12 @@ class Pipeline:
         print("Pipeline stopped.")
 
     def wait(self) -> None:
-        """Block the calling thread until KeyboardInterrupt, then stop."""
+        """Block the calling thread until KeyboardInterrupt or auto-stop, then stop."""
         try:
-            # Spin on a sleep so the main thread stays interruptible
-            while True:
+            # Spin on a sleep so the main thread stays interruptible.
+            # Also exit cleanly if a worker (e.g. ASR silence detection)
+            # sets stop_event internally.
+            while not self._stop_event.is_set():
                 time.sleep(0.2)
         except KeyboardInterrupt:
             print("\nInterrupt received — shutting down…")

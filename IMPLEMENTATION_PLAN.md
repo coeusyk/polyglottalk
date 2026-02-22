@@ -372,18 +372,30 @@ main() -> None
 | `TranslatorThread` | `Translator.run` | Yes | `text_queue` | `tts_queue` |
 | `TTSThread` | `TTSEngine.run` | Yes | `tts_queue` | Speakers |
 
-### 4.3 Backpressure Strategy
+### 4.3 Backpressure Strategy (Drop-Oldest)
 
 - All queues have `maxsize=2`.
-- **Producers use `queue.put(item, timeout=1.0)`** inside a loop that
-  checks `stop_event`. If the put times out (queue full), re-check
-  `stop_event` and retry. This means:
-  - If TTS falls behind, `tts_queue` fills up → `TranslatorThread`
-    blocks on put → `text_queue` fills up → `ASRThread` blocks on put
-    → `audio_queue` fills up → `AudioCapture` drops the current chunk
-    (logs a warning: `"Dropping audio chunk — pipeline backed up"`).
-  - This is the correct behavior: we drop the oldest unprocessed audio
-    rather than accumulating unbounded memory.
+- **Producers use `put_nowait()` with a drop-oldest fallback** — if the
+  queue is full, the oldest item is evicted (`get_nowait()`) and the new
+  item is inserted immediately. This keeps all 4 threads ALWAYS moving
+  forward; no producer ever blocks on a slow downstream consumer.
+  ```
+  try:
+      queue.put_nowait(new_item)
+  except queue.Full:
+      queue.get_nowait()        # discard oldest
+      queue.put_nowait(new_item)
+  ```
+  - If TTS falls behind: `tts_queue` fills → Translator evicts the
+    oldest pending translation and inserts the freshest one. TTS
+    eventually catches up on the most recent speech, skipping stale
+    utterances — correct behavior for real-time S2S.
+  - If ASR falls behind (> 2.5 s per chunk): `text_queue` fills →
+    ASREngine evicts oldest transcription. AudioCapture continues
+    recording uninterrupted; `audio_queue` may also fill and evict
+    oldest audio chunks.
+  - **No thread ever blocks on `put()`** — true pipeline parallelism
+    is guaranteed at all load levels.
 - **Consumers use `queue.get(timeout=0.5)`** inside a loop that checks
   `stop_event`. `queue.Empty` exceptions are silently retried.
 
@@ -408,6 +420,98 @@ main() -> None
        # ... process item ...
    ```
 4. Daemon threads ensure process exits even if join times out.
+
+---
+
+### 4.5 Pipeline Parallelism (True Concurrent Execution)
+
+The four threads run **simultaneously** at all times. They share no locks
+and communicate only through `queue.Queue` objects. At steady state every
+thread is active during every 2.5-second window.
+
+#### Timing Diagram (steady state, ASR ≈ 1.2 s)
+
+Time axis (seconds) →
+
+```
+t=0      t=2.5    t=5.0    t=7.5    t=10.0
+│        │        │        │        │
+Thread 1 [Capture N+1──────][Capture N+2─────][Capture N+3──────]
+(Audio)  ──────────────────────────────────────────────────────────
+Thread 2          [ASR(N)──────]    [ASR(N+1)────]   [ASR(N+2)───]
+(ASR)    ──────────────────────────────────────────────────────────
+Thread 3                   [MT(N-1)──] [MT(N)──────] [MT(N+1)────]
+(MT)     ──────────────────────────────────────────────────────────
+Thread 4                        [TTS(N-2)] [TTS(N-1)] [TTS(N)────]
+(TTS)    ──────────────────────────────────────────────────────────
+```
+
+- **Thread 1** records the next buffer while Thread 2 is transcribing
+  the current one. It NEVER waits for Thread 2.
+- **Thread 2** transcribes buffer N while Thread 3 translates buffer N-1
+  and Thread 4 is speaking buffer N-2.
+- All 4 threads make progress in **every** 2.5-second window.
+- End-to-end latency at steady state ≈ chunk duration + ASR time + MT time
+  ≈ 2.5 + 1.2 + 0.4 = **~4.1 s rolling delay**, NOT 2.5 × 4 = 10 s.
+
+#### Guarantee: producers never block
+
+Each `_put()` helper uses `put_nowait()` + drop-oldest (see §4.3).
+This means:
+
+| Thread | Blocks on? |
+|--------|-----------|
+| AudioCapture | `sounddevice` callback timing only — never on `audio_queue` |
+| ASREngine | `audio_queue.get()` (waits for a new chunk to arrive) |
+| Translator | `text_queue.get()` (waits for a new transcription) |
+| TTSEngine | `tts_queue.get()` (waits for a new translation) |
+
+A consumer blocking on `get()` is **correct** — it simply means the
+upstream stage hasn't produced output yet. A producer blocking on `put()`
+would break the parallel model and is explicitly prevented.
+
+#### Slow-ASR scenario (ASR takes > 2.5 s per chunk)
+
+```
+t=0        t=2.5      t=5.0      t=7.5
+Thread 1   [Cap N+1──][Cap N+2──][Cap N+3──]
+Thread 2   [ASR(N)─────────────────]    ← ASR takes 5 s
+Thread 2                         [QUEUE FULL: chunk N+1 evicts chunk N+2?]
+```
+
+Steps:
+1. AudioCapture records N+1, N+2, N+3 normally at 2.5-s intervals.
+2. ASR is still running on N. `audio_queue` fills (maxsize=2 → holds N+1,
+   N+2).
+3. When AudioCapture tries to push N+3, the queue is full → **oldest
+   entry (N+1) is evicted**, N+3 is inserted. N+1 is permanently dropped.
+4. When ASR finishes chunk N it immediately picks up N+2 (oldest
+   remaining), then N+3.
+5. **Net effect**: we skip a buffer, but processing stays as current as
+   possible. The pipeline self-heals within 1–2 buffer cycles.
+6. Mitigation: set `ASR_BEAM_SIZE=1` and `vad_filter=False` to minimize
+   ASR time. A 4-core CPU typically keeps ASR ≤ 1.5 s on `base.en int8`.
+
+#### Live Console Output
+
+To make real-time progress visible, each stage prints immediately upon
+completion — **before** queuing output for the next stage:
+
+```
+[ASR   #  1] Hello, how are you today?
+[→HI   #  1] नमस्ते, आप आज कैसे हैं?
+[ASR   #  2] I'm doing well, thank you.
+[→HI   #  2] मैं ठीक हूँ, धन्यवाद।
+```
+
+- `ASREngine` prints the transcription immediately after `_transcribe()`
+  returns, **before** calling `_put()`.
+- `Translator` prints the translation immediately after
+  `_translate_with_context()` returns, **before** calling `_put()`.
+- Both prints use `flush=True` so text appears instantly even when
+  stdout is line-buffered.
+- This gives the user visible confirmation that the pipeline is working
+  while TTS synthesis is still queued/pending.
 
 ---
 
@@ -551,7 +655,6 @@ Each worker class logs timestamps at stage entry and exit:
 [2026-02-22 10:00:02.460 TranslatorThread] Text received
 [2026-02-22 10:00:02.870 TranslatorThread] Translation done (0.410s): "नमस्ते आप कैसे हैं"
 [2026-02-22 10:00:02.875 TTSThread] Text received
-[2026-02-22 10:00:02.920 TTSThread] Speech done (0.045s)
 ```
 
 - Each `_transcribe`, `_translate_with_context`, and `_speak` method
