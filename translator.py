@@ -60,8 +60,11 @@ class Translator:
         self._context_source: Deque[str] = collections.deque(
             maxlen=context_maxlen
         )
-        self._cache_key: str = ""
-        self._cache_val: str = ""
+        # Stores the actual translated output for each context segment so
+        # prefix_translated is read from history instead of re-translating.
+        self._context_translated: Deque[str] = collections.deque(
+            maxlen=context_maxlen
+        )
 
         logger.info(
             "Loading translation model (%s → %s)…", source_lang, target_lang
@@ -112,6 +115,7 @@ class Translator:
                 chunk_id=item.chunk_id,
                 text=translated,
                 timestamp=time.perf_counter(),
+                capture_timestamp=item.capture_timestamp,
             )
             self._put(segment)
 
@@ -124,15 +128,18 @@ class Translator:
 
         Steps
         -----
-        1. Build ``prefix_source`` from context deque.
-        2. Concatenate: ``combined_input = prefix_source + " " + new_text``.
-        3. Translate ``combined_input``.
-        4. Translate ``prefix_source`` alone (cached) → ``prefix_translated``.
-        5. Strip ``prefix_translated`` from start of full output (exact/fuzzy).
-        6. Update context deque with ``new_text``.
+        1. Build ``prefix_source`` from _context_source deque.
+        2. Build ``prefix_translated`` from _context_translated deque
+           (actual previous outputs — no extra translation call needed).
+        3. Concatenate: ``combined_input = prefix_source + " " + new_text``.
+        4. Translate ``combined_input`` (ONE Argos call per segment).
+        5. Strip ``prefix_translated`` from start of full output
+           (exact match first, fuzzy difflib fallback).
+        6. Update both context deques.
         7. Return trimmed translation (fallback to full if trim fails).
         """
         prefix_source = " ".join(self._context_source).strip()
+        prefix_translated = " ".join(self._context_translated).strip()
 
         if prefix_source:
             combined_input = f"{prefix_source} {new_text}"
@@ -141,17 +148,15 @@ class Translator:
 
         full_translation = self._translate(combined_input)
 
-        if prefix_source:
-            prefix_translated = self._translate_prefix(prefix_source)
+        if prefix_translated:
             trimmed = self._trim_prefix(full_translation, prefix_translated)
         else:
             trimmed = full_translation
 
-        # Update rolling context AFTER translation (use source text)
+        # Update rolling context AFTER translation (use source + output)
         self._context_source.append(new_text)
-
-        # Safety: never return empty
         result = trimmed.strip() if trimmed.strip() else full_translation.strip()
+        self._context_translated.append(result)
         return result
 
     def _trim_prefix(self, full: str, prefix_tr: str) -> str:
@@ -203,16 +208,6 @@ class Translator:
             text, self._source_lang, self._target_lang
         )
 
-    def _translate_prefix(self, prefix_source: str) -> str:
-        """Translate the context prefix, using a simple one-entry cache."""
-        if prefix_source == self._cache_key:
-            return self._cache_val
-        result = self._translate(prefix_source)
-        self._cache_key = prefix_source
-        self._cache_val = result
-        return result
-
-    # ── Model loading ───────────────────────────────────────────────────────
 
     def _load_model(self) -> None:
         """Verify the Argos language package is installed.

@@ -62,7 +62,6 @@ class ASREngine:
         logger.info("ASR model loaded in %.1fs", time.perf_counter() - t0)
 
         self._last_text: str = ""
-        self._heard_speech: bool = False  # becomes True after first non-silent chunk
 
     # ── Thread target ───────────────────────────────────────────────────────
 
@@ -82,13 +81,7 @@ class ASREngine:
             # ── Silence filter ─────────────────────────────────────────────
             rms = float(np.sqrt(np.mean(item.audio ** 2)))
             if rms < config.RMS_SILENCE_THRESHOLD:
-                if self._heard_speech:
-                    logger.info(
-                        "Chunk #%d silent after speech — stopping pipeline.",
-                        item.chunk_id,
-                    )
-                    self._stop_event.set()
-                    break
+                logger.debug("Chunk #%d silent (rms=%.5f) — skipping.", item.chunk_id, rms)
                 continue
 
             # ── Transcribe ─────────────────────────────────────────────────
@@ -118,7 +111,6 @@ class ASREngine:
                 continue
 
             self._last_text = text
-            self._heard_speech = True
             logger.debug(
                 "Transcription done (%.3fs) chunk #%d: %r",
                 elapsed,
@@ -132,6 +124,7 @@ class ASREngine:
                 chunk_id=item.chunk_id,
                 text=text,
                 timestamp=time.perf_counter(),
+                capture_timestamp=item.timestamp,
             )
             self._put(segment)
 

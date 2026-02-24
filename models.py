@@ -29,6 +29,7 @@ class TextSegment:
     chunk_id: int
     text: str
     timestamp: float = field(default_factory=time.perf_counter)
+    capture_timestamp: float = field(default_factory=time.perf_counter)
 
 
 @dataclass
@@ -38,3 +39,4 @@ class TranslatedSegment:
     chunk_id: int
     text: str
     timestamp: float = field(default_factory=time.perf_counter)
+    capture_timestamp: float = field(default_factory=time.perf_counter)
