@@ -49,7 +49,7 @@ Pipeline stopped.
 ### System packages (Linux / WSL2)
 
 ```bash
-sudo apt install -y libportaudio2 portaudio19-dev espeak-ng pulseaudio libpulse0
+sudo apt install -y libportaudio2 portaudio19-dev espeak-ng pulseaudio libpulse0 alsa-utils
 ```
 
 | Package | Purpose |
@@ -57,6 +57,7 @@ sudo apt install -y libportaudio2 portaudio19-dev espeak-ng pulseaudio libpulse0
 | `libportaudio2` | PortAudio C library — required by `sounddevice` |
 | `espeak-ng` | TTS backend for `pyttsx3` on Linux |
 | `pulseaudio` / `libpulse0` | Audio routing (WSL2: connects to WSLg's RDP microphone) |
+| `alsa-utils` | ALSA audio utilities including `aplay` — required by `pyttsx3` for audio playback |
 
 > **WSL2 users:** Audio is bridged via WSLg on Windows 11. After installing
 > `libpulse0`, verify your mic appears with:
