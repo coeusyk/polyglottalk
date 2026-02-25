@@ -6,17 +6,17 @@
 ## Part 1 — Prototype (Make It Work)
 
 ### 1.1 Stability Fixes
-- [ ] Upgrade faster-whisper model to `base.en` in `config.py` if not already done (`ASR_MODEL_SIZE = "base.en"`)
-- [ ] Add RMS energy check in `asr_engine.py` before pushing to `text_queue` — skip silent chunks where `np.sqrt(np.mean(audio**2)) < 0.01`
-- [ ] Add duplicate transcription guard — if `new_text == previous_text`, skip and do not push to `text_queue`
-- [ ] Confirm faster-whisper generator is fully drained: `" ".join(seg.text for seg in segments)` — never break early from the loop
-- [ ] Set `OMP_NUM_THREADS=2` and `CT2_INTER_THREADS=1` as environment variables in `config.py` before any imports
+- [x] Upgrade faster-whisper model to `base.en` in `config.py` if not already done (`ASR_MODEL_SIZE = "base.en"`)
+- [x] Add RMS energy check in `asr_engine.py` before pushing to `text_queue` — skip silent chunks where `np.sqrt(np.mean(audio**2)) < 0.01`
+- [x] Add duplicate transcription guard — if `new_text == previous_text`, skip and do not push to `text_queue`
+- [x] Confirm faster-whisper generator is fully drained: `" ".join(seg.text for seg in segments)` — never break early from the loop
+- [x] Set `OMP_NUM_THREADS=2` and `CT2_INTER_THREADS=1` as environment variables in `config.py` before any imports
 
 ### 1.2 Context Continuity
-- [ ] Confirm `_translate_with_context()` correctly builds `combined_input = f"{prefix_source} {new_text}".strip()`
-- [ ] Add exact prefix trim: if `full_translation.startswith(prefix_translated)`, strip it
-- [ ] Add `difflib.SequenceMatcher` fuzzy trim as fallback when exact trim fails
-- [ ] Add safety guard: never return an empty string — fall back to `full_translation` as-is if trimmed result is empty
+- [x] Confirm `_translate_with_context()` correctly builds `combined_input = f"{prefix_source} {new_text}".strip()`
+- [x] Add exact prefix trim: if `full_translation.startswith(prefix_translated)`, strip it
+- [x] Add `difflib.SequenceMatcher` fuzzy trim as fallback when exact trim fails
+- [x] Add safety guard: never return an empty string — fall back to `full_translation` as-is if trimmed result is empty
 
 ### 1.3 Threading & Shutdown
 - [ ] Confirm `AutoModel.from_pretrained()` is called inside `TTSEngine.run()` with `low_cpu_mem_usage=False` — not in `__init__()` — to avoid meta tensor crash during vocoder init

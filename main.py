@@ -20,6 +20,7 @@ import config  # noqa: F401 — sets os.environ before CT2 is imported
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -74,6 +75,13 @@ def main() -> None:
     print(f" TTS output saved to: {config.TTS_OUTPUT_DIR}/chunk_NNNN.wav")
     print("=" * 60)
 
+    # ── Clean up old output chunks ──────────────────────────────────────
+    output_dir = Path(config.TTS_OUTPUT_DIR)
+    if output_dir.exists():
+        for wav_file in output_dir.glob("chunk_*.wav"):
+            wav_file.unlink()
+            logging.getLogger(__name__).debug("Removed old chunk: %s", wav_file.name)
+
     # ── Import pipeline here so CT2 env vars are already set ─────────────
     # (pipeline imports asr_engine / translator which import faster_whisper /
     #  argostranslate — those must see OMP_NUM_THREADS from config.py)
@@ -82,7 +90,8 @@ def main() -> None:
     pipeline = Pipeline(source_lang=args.source, target_lang=args.target)
 
     pipeline.start()
-    pipeline.wait()  # blocks until Ctrl+C
+    pipeline.wait()  # blocks until Ctrl+C or Enter
+    sys.exit(0)  # explicit clean exit
 
 
 if __name__ == "__main__":

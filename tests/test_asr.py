@@ -94,14 +94,16 @@ def _load_flac_as_float32(path: Path) -> np.ndarray:
     """Load a FLAC file as a float32 mono array at config.SAMPLE_RATE Hz."""
     import soundfile as sf
 
-    audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
+    audio, sr = sf.read(str(path), dtype="float32", always_2d=False)  # type: ignore[misc]
     if audio.ndim > 1:
         audio = audio.mean(axis=1)          # stereo → mono
+        
     if sr != config.SAMPLE_RATE:
         from math import gcd
         from scipy.signal import resample_poly
         g = gcd(config.SAMPLE_RATE, sr)
         audio = resample_poly(audio, config.SAMPLE_RATE // g, sr // g)
+
     return audio.astype(np.float32)
 
 

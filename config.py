@@ -16,9 +16,33 @@ os.environ.setdefault("CT2_INTER_THREADS", "1")
 SAMPLE_RATE: int = 16000          # Hz — Whisper expects 16 kHz
 CHUNK_DURATION: float = 2.5       # seconds per ASR chunk
 BLOCK_SIZE: int = int(SAMPLE_RATE * CHUNK_DURATION)  # 40 000 samples
+
+# ── Overlapping chunks ──────────────────────────────────────────────────────
+# Consecutive audio chunks share CHUNK_OVERLAP seconds of audio so that
+# words at chunk boundaries are never cut.  The stride (new audio per chunk)
+# is CHUNK_DURATION − CHUNK_OVERLAP.
+#
+# Research basis:
+#   • Whispy (Bevilacqua et al., 2024) — shifting buffer with Levenshtein
+#     deduplication achieves <2 % WER degradation vs offline Whisper.
+#   • Whisper-Streaming (Machácek et al., 2023) — LocalAgreement-2 policy
+#     with overlapping re-transcription achieves 3.3 s latency.
+#   • Whisper long-form (OpenAI) — overlapping 30 s windows with timestamp-
+#     based stitching avoid mid-word cuts.
+CHUNK_OVERLAP: float = 0.5        # seconds of overlap between consecutive chunks
+OVERLAP_SAMPLES: int = int(SAMPLE_RATE * CHUNK_OVERLAP)  # 8 000 samples
+STRIDE_SAMPLES: int = BLOCK_SIZE - OVERLAP_SAMPLES        # 32 000 samples
+
 # WSLg RDP audio bridge delivers lower amplitude than native Linux mics.
 # Measured speech RMS ~0.0003; true silence ~0.00001. Threshold at 0.0001.
 RMS_SILENCE_THRESHOLD: float = 0.0001  # chunks below this RMS are dropped
+
+# ── Sentence accumulation ───────────────────────────────────────────────────
+# ASR fragments are buffered until a natural sentence boundary is detected.
+# This ensures the translator and TTS receive complete sentences rather than
+# mid-word fragments with artificial trailing periods.
+SENTENCE_BUFFER_TIMEOUT: float = 1.5   # flush after this many seconds of no new text
+SENTENCE_BUFFER_MAXWORDS: int = 25     # force-flush when buffer exceeds this many words
 
 # ── Queue ───────────────────────────────────────────────────────────────────
 QUEUE_MAXSIZE: int = 2            # backpressure limit per inter-stage queue
@@ -31,6 +55,11 @@ ASR_COMPUTE_TYPE: str = "int8"
 ASR_DEVICE: str = "cpu"
 ASR_BEAM_SIZE: int = 1
 ASR_LANGUAGE: str = "en"          # skip language-detection for speed
+
+# Strip trailing periods that Whisper auto-appends to every chunk.
+# This prevents the translator / TTS from treating every fragment as a
+# complete sentence, which degrades translation quality and prosody.
+ASR_STRIP_TRAILING_PERIOD: bool = True
 
 # ── Translation (Argos Translate) ────────────────────────────────────────────
 SOURCE_LANG: str = "en"

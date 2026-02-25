@@ -70,12 +70,9 @@ class TTSEngine:
     def run(self) -> None:
         """Load IndicF5, then synthesise translated segments into WAV files."""
         # ── Resolve "auto" device ──────────────────────────────────────────
+        import torch  # noqa: PLC0415  — imported once here for device check and model load
         if self._device == "auto":
-            try:
-                import torch  # noqa: PLC0415
-                self._device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                self._device = "cpu"
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
         logger.info(
             "Loading IndicF5 model '%s' on device=%s…",
@@ -83,18 +80,22 @@ class TTSEngine:
             self._device,
         )
 
-        from transformers import AutoModel  # noqa: PLC0415
+        from transformers.models.auto.modeling_auto import AutoModel  # noqa: PLC0415
 
+        # NOTE: transformers>=5.0 removed `low_cpu_mem_usage` and now forces
+        # meta-device init by default, which breaks Vocos/MelSpectrogram whose
+        # __init__ calls .item() on tensors before weights are materialised.
+        # Requires transformers<5.0 (pinned in requirements.txt).
         self._model = AutoModel.from_pretrained(
             config.INDICF5_MODEL_ID,
             trust_remote_code=True,
-            low_cpu_mem_usage=False,  # vocos vocoder calls .item() during init; meta tensors break this
+            low_cpu_mem_usage=False,
         )
 
         # Move to GPU if requested
         if self._device == "cuda":
             try:
-                import torch  # noqa: PLC0415
+                assert self._model is not None
                 self._model = self._model.to(torch.device("cuda"))
             except Exception:
                 logger.warning("Failed to move IndicF5 to CUDA — falling back to CPU.")
@@ -133,19 +134,22 @@ class TTSEngine:
             out_path = self._output_dir / f"chunk_{item.chunk_id:04d}.wav"
 
             t0 = time.perf_counter()
-            self._synthesise(item.text, out_path, ref_audio, ref_text)
+            success = self._synthesise(item.text, out_path, ref_audio, ref_text)
             elapsed = time.perf_counter() - t0
 
             # End-to-end latency measured from audio capture to file write
             e2e = time.perf_counter() - item.capture_timestamp
-            print(f"[TTS   #{item.chunk_id:>4d}] saved → {out_path}", flush=True)
-            logger.debug(
-                "TTS saved (%.3fs synthesis, %.3fs e2e) chunk #%d → %s",
-                elapsed,
-                e2e,
-                item.chunk_id,
-                out_path,
-            )
+            if success:
+                print(f"[TTS   #{item.chunk_id:>4d}] saved → {out_path}", flush=True)
+                logger.debug(
+                    "TTS saved (%.3fs synthesis, %.3fs e2e) chunk #%d → %s",
+                    elapsed,
+                    e2e,
+                    item.chunk_id,
+                    out_path,
+                )
+            else:
+                print(f"[TTS   #{item.chunk_id:>4d}] synthesis failed — no file written", flush=True)
 
         logger.info("TTSEngine stopped.")
 
@@ -157,7 +161,7 @@ class TTSEngine:
         path: Path,
         ref_audio: str,
         ref_text: str,
-    ) -> None:
+    ) -> bool:
         """Synthesise ``text`` via IndicF5 and write a WAV file to ``path``.
 
         Args:
@@ -168,7 +172,7 @@ class TTSEngine:
         """
         if self._model is None:
             logger.warning("TTS model not loaded — skipping synthesis for %s.", path.name)
-            return
+            return False
 
         try:
             audio = self._model(
@@ -182,6 +186,8 @@ class TTSEngine:
                 audio = audio.astype(np.float32) / 32_768.0
 
             sf.write(str(path), np.array(audio, dtype=np.float32), samplerate=self._SAMPLERATE)
+            return True
 
         except Exception:
             logger.exception("IndicF5 synthesis failed for chunk '%s'.", path.name)
+            return False
