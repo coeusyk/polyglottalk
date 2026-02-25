@@ -53,7 +53,7 @@ Pipeline stopped.
 ### System packages (Linux / WSL2)
 
 ```bash
-sudo apt install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-utils
+sudo apt-get install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-utils
 ```
 
 | Package | Purpose |
