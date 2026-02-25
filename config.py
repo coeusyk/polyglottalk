@@ -60,7 +60,7 @@ QUEUE_GET_TIMEOUT: float = 0.5    # seconds before a blocked get retries
 # ── ASR (faster-whisper) ────────────────────────────────────────────────────
 ASR_MODEL_SIZE: str = "base.en"
 ASR_COMPUTE_TYPE: str = "int8"
-ASR_DEVICE: str = "cpu"
+ASR_DEVICE: str = "auto"
 ASR_BEAM_SIZE: int = 1
 ASR_LANGUAGE: str = "en"          # skip language-detection for speed
 
