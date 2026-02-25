@@ -40,6 +40,9 @@ class Pipeline:
 
         # ── Shared synchronisation ────────────────────────────────────────
         self._stop_event = threading.Event()
+        # Separate event used by drain() to stop AudioCapture without
+        # killing the downstream ASR → Translator → TTS drain chain.
+        self._audio_stop_event = threading.Event()
 
         # ── Inter-stage queues ────────────────────────────────────────────
         self.audio_queue: queue.Queue = queue.Queue(maxsize=config.QUEUE_MAXSIZE)
@@ -68,6 +71,7 @@ class Pipeline:
         self._audio_capture = AudioCapture(
             audio_queue=self.audio_queue,
             stop_event=self._stop_event,
+            audio_stop_event=self._audio_stop_event,
         )
         self._tts_engine = TTSEngine(
             tts_queue=self.tts_queue,
@@ -93,11 +97,12 @@ class Pipeline:
             t.start()
             logger.info("Started %s", name)
 
-        print("✓ Pipeline ready. Speak now… (Ctrl+C to stop)")
+        print("✓ Pipeline ready. Speak now…")
 
     def stop(self) -> None:
         """Signal all threads to exit and wait for them to finish."""
         logger.info("Stopping pipeline…")
+        self._audio_stop_event.set()
         self._stop_event.set()
 
         # Push one sentinel per queue to unblock any thread stuck in get()
@@ -123,15 +128,72 @@ class Pipeline:
 
         print("Pipeline stopped.")
 
-    def wait(self) -> None:
-        """Block the calling thread until KeyboardInterrupt or auto-stop, then stop."""
+    def drain(self) -> None:
+        """Graceful stop: halt audio capture and let queued work finish.
+
+        Sends a sentinel only to audio_queue.  The None propagates naturally
+        through ASR → Translator → TTS so every thread exits after draining
+        its own queue.  Does NOT set stop_event, so threads process every item
+        already enqueued before they see the sentinel.
+        """
+        logger.info("Draining pipeline — finishing queued TTS…")
+        print("\nStopping capture — finishing queued translations…")
+        # Stop AudioCapture immediately — no more mic audio needed
+        self._audio_stop_event.set()
         try:
-            # Spin on a sleep so the main thread stays interruptible.
-            # Also exit cleanly if a worker (e.g. ASR silence detection)
-            # sets stop_event internally.
-            while not self._stop_event.is_set():
+            self.audio_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.audio_queue.put_nowait(None)
+            except queue.Full:
+                pass
+
+        # Wait for all threads to finish draining naturally
+        for t in self._threads:
+            t.join(timeout=30)
+            if t.is_alive():
+                logger.warning("Thread %s still alive after drain timeout.", t.name)
+
+        # Ensure everything is fully torn down
+        self._stop_event.set()
+        print("Pipeline stopped.")
+
+    def wait(self) -> None:
+        """Block until Enter (graceful drain), Ctrl+C (hard stop), or auto-stop."""
+        print("  Press Enter to stop recording and finish remaining TTS.")
+        print("  Press Ctrl+C to stop immediately.")
+
+        # Thread that watches for Enter key and triggers a graceful drain
+        _drain_requested = threading.Event()
+
+        def _key_watcher() -> None:
+            try:
+                input()  # blocks until Enter
+                _drain_requested.set()
+            except EOFError:
+                pass  # non-interactive stdin — ignore
+
+        key_thread = threading.Thread(target=_key_watcher, name="KeyWatcher", daemon=True)
+        key_thread.start()
+
+        try:
+            while not self._stop_event.is_set() and not _drain_requested.is_set():
                 time.sleep(0.2)
         except KeyboardInterrupt:
             print("\nInterrupt received — shutting down…")
-        finally:
             self.stop()
+            key_thread.join(timeout=1)  # clean up key watcher
+            return
+
+        if _drain_requested.is_set():
+            self.drain()
+        else:
+            # stop_event was set internally (e.g. silence auto-stop)
+            self.stop()
+
+        # Ensure key watcher thread is fully cleaned up before exiting
+        key_thread.join(timeout=1)

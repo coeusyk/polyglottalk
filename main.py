@@ -5,7 +5,7 @@ Usage
 -----
     python main.py
     python main.py --source en --target hi
-    python main.py --source en --target hi --tts-rate 160
+    python main.py --log-level DEBUG
 
 IMPORTANT: config is imported first so that OMP_NUM_THREADS and
 CT2_INTER_THREADS are set in os.environ before any CTranslate2 library
@@ -20,6 +20,7 @@ import config  # noqa: F401 — sets os.environ before CT2 is imported
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -38,13 +39,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=config.TARGET_LANG,
         metavar="LANG",
         help=f"Target language code (default: {config.TARGET_LANG})",
-    )
-    p.add_argument(
-        "--tts-rate",
-        type=int,
-        default=config.TTS_RATE,
-        metavar="WPM",
-        help=f"TTS speech rate in words-per-minute (default: {config.TTS_RATE})",
     )
     p.add_argument(
         "--log-level",
@@ -66,13 +60,27 @@ def main() -> None:
     )
     # Suppress faster-whisper's verbose "Processing audio with duration" messages
     logging.getLogger("faster_whisper").setLevel(logging.WARNING)
-    # Suppress pyttsx3 engine finding noise ("aplay not found", "espeak not found", etc.)
-    logging.getLogger("pyttsx3.engine").setLevel(logging.ERROR)
+
+    device = config.INDICF5_DEVICE
+    if device == "auto":
+        try:
+            import torch  # noqa: PLC0415
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
 
     print("=" * 60)
     print(" PolyglotTalk v0.1 — Offline Speech-to-Speech Translation")
-    print(f" {args.source.upper()} → {args.target.upper()}  |  CPU-only  |  No cloud APIs")
+    print(f" {args.source.upper()} → {args.target.upper()}  |  TTS: IndicF5 ({device})  |  No cloud APIs")
+    print(f" TTS output saved to: {config.TTS_OUTPUT_DIR}/chunk_NNNN.wav")
     print("=" * 60)
+
+    # ── Clean up old output chunks ──────────────────────────────────────
+    output_dir = Path(config.TTS_OUTPUT_DIR)
+    if output_dir.exists():
+        for wav_file in output_dir.glob("chunk_*.wav"):
+            wav_file.unlink()
+            logging.getLogger(__name__).debug("Removed old chunk: %s", wav_file.name)
 
     # ── Import pipeline here so CT2 env vars are already set ─────────────
     # (pipeline imports asr_engine / translator which import faster_whisper /
@@ -81,12 +89,9 @@ def main() -> None:
 
     pipeline = Pipeline(source_lang=args.source, target_lang=args.target)
 
-    # Apply CLI override for TTS rate if provided
-    if args.tts_rate != config.TTS_RATE:
-        pipeline._tts_engine._rate = args.tts_rate
-
     pipeline.start()
-    pipeline.wait()  # blocks until Ctrl+C
+    pipeline.wait()  # blocks until Ctrl+C or Enter
+    sys.exit(0)  # explicit clean exit
 
 
 if __name__ == "__main__":

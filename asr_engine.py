@@ -5,6 +5,30 @@ Key constraints:
 - WhisperModel is loaded ONCE in __init__ (not in run()).
 - model.transcribe() returns a GENERATOR — it must be fully drained.
 - Silent/hallucinated chunks are filtered before pushing to text_queue.
+
+Overlap deduplication
+---------------------
+Because AudioCapture now emits overlapping chunks (see config.CHUNK_OVERLAP),
+Whisper will re-transcribe the overlapping audio region.  The ASR engine
+performs **suffix-prefix word matching** to deduplicate:
+
+    prev_words = ["hello", "world", "how", "are"]
+    curr_words = ["how", "are", "you", "doing"]
+    → deduplicated = ["you", "doing"]
+
+Research basis:
+  • Whispy (Bevilacqua et al., 2024) — Levenshtein-distance deduplication
+    over a shifting buffer of re-transcribed overlapping audio.
+  • Whisper-Streaming (Machácek et al., 2023) — LocalAgreement-2 longest-
+    common-prefix policy over consecutive overlapping transcriptions.
+
+Sentence accumulation
+---------------------
+Whisper appends a period to virtually every chunk transcription, even when
+speech continues into the next chunk.  Sending each fragment with an
+artificial sentence-final period degrades translation quality and TTS
+prosody.  Instead, fragments are buffered until a natural sentence boundary
+is detected (pause / silence in next chunk, or accumulation timeout).
 """
 
 from __future__ import annotations
@@ -36,6 +60,20 @@ class ASREngine:
        ``config.RMS_SILENCE_THRESHOLD`` are skipped.
     2. Duplicate filter — if the transcription is identical to the
        previous non-empty result, it is skipped (Whisper hallucination).
+
+    Overlap deduplication
+    ---------------------
+    Since audio chunks now overlap, the engine keeps the previous
+    transcription's word list and strips repeated words from the start
+    of each new transcription (suffix-prefix matching).
+
+    Sentence accumulation
+    ---------------------
+    Deduplicated fragments are buffered.  The buffer is flushed as a
+    single TextSegment when any of these conditions is met:
+      • The next audio chunk is silent (natural pause → sentence end).
+      • No new text arrives for SENTENCE_BUFFER_TIMEOUT seconds.
+      • The buffer exceeds SENTENCE_BUFFER_MAXWORDS words.
     """
 
     def __init__(
@@ -62,18 +100,34 @@ class ASREngine:
         logger.info("ASR model loaded in %.1fs", time.perf_counter() - t0)
 
         self._last_text: str = ""
+        # Word list from the previous chunk's transcription — for dedup
+        self._prev_words: list[str] = []
+        # Sentence accumulation buffer
+        self._sentence_buf: list[str] = []
+        self._sentence_chunk_id: int = 0
+        self._sentence_capture_ts: float = 0.0
+        self._last_text_time: float = 0.0  # perf_counter when last text appended
 
     # ── Thread target ───────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Consume AudioChunks, transcribe, push TextSegments."""
+        """Consume AudioChunks, transcribe, deduplicate, buffer, push TextSegments."""
         while not self._stop_event.is_set():
             try:
                 item = self._audio_queue.get(timeout=config.QUEUE_GET_TIMEOUT)
             except queue.Empty:
+                # Check sentence buffer timeout while waiting
+                self._maybe_flush_timeout()
                 continue
 
             if item is None:  # shutdown sentinel
+                # Flush any remaining sentence buffer
+                self._flush_sentence_buffer()
+                # Propagate sentinel downstream so Translator exits cleanly
+                try:
+                    self._text_queue.put_nowait(None)
+                except queue.Full:
+                    pass
                 break
 
             assert isinstance(item, AudioChunk)
@@ -82,6 +136,10 @@ class ASREngine:
             rms = float(np.sqrt(np.mean(item.audio ** 2)))
             if rms < config.RMS_SILENCE_THRESHOLD:
                 logger.debug("Chunk #%d silent (rms=%.5f) — skipping.", item.chunk_id, rms)
+                # Silence after speech → natural sentence boundary → flush buffer
+                if self._sentence_buf:
+                    logger.debug("Silence detected — flushing sentence buffer.")
+                    self._flush_sentence_buffer()
                 continue
 
             # ── Transcribe ─────────────────────────────────────────────────
@@ -111,24 +169,197 @@ class ASREngine:
                 continue
 
             self._last_text = text
+
+            # ── Overlap deduplication ──────────────────────────────────────
+            curr_words = text.split()
+            deduped_words = self._deduplicate_overlap(self._prev_words, curr_words)
+            self._prev_words = curr_words  # keep full transcription for next round
+
+            if not deduped_words:
+                logger.debug(
+                    "Chunk #%d — all words duplicated from overlap, skipping.",
+                    item.chunk_id,
+                )
+                continue
+
+            deduped_text = " ".join(deduped_words)
+
+            # ── Strip trailing period ──────────────────────────────────────
+            deduped_text = self._normalize_punctuation(deduped_text)
+
+            if not deduped_text:
+                continue
+
             logger.debug(
                 "Transcription done (%.3fs) chunk #%d: %r",
                 elapsed,
                 item.chunk_id,
-                text,
+                deduped_text,
             )
-            # Live console output — print immediately before queuing
-            print(f"[ASR   #{item.chunk_id:>4d}] {text}", flush=True)
+            # Live console output
+            print(f"[ASR   #{item.chunk_id:>4d}] {deduped_text}", flush=True)
 
-            segment = TextSegment(
-                chunk_id=item.chunk_id,
-                text=text,
-                timestamp=time.perf_counter(),
-                capture_timestamp=item.timestamp,
-            )
-            self._put(segment)
+            # ── Append to sentence buffer ──────────────────────────────────
+            # Check timeout BEFORE adding new text: if the previous buffer
+            # has been waiting longer than SENTENCE_BUFFER_TIMEOUT (e.g. the
+            # user paused then started a new sentence), flush the old content
+            # first so the new content starts a fresh sentence.
+            self._maybe_flush_timeout()
+            if not self._sentence_buf:
+                self._sentence_chunk_id = item.chunk_id
+                self._sentence_capture_ts = item.timestamp
+            self._sentence_buf.append(deduped_text)
+            self._last_text_time = time.perf_counter()
+
+            # Force-flush if buffer is too long
+            buf_words = sum(len(s.split()) for s in self._sentence_buf)
+            if buf_words >= config.SENTENCE_BUFFER_MAXWORDS:
+                logger.debug("Sentence buffer maxwords reached — flushing.")
+                self._flush_sentence_buffer()
 
         logger.info("ASREngine stopped.")
+
+    # ── Overlap deduplication ───────────────────────────────────────────────
+
+    @staticmethod
+    def _expand_to_tokens(
+        words: list[str],
+    ) -> tuple[list[str], list[int]]:
+        """Tokenise a word list for overlap comparison.
+
+        Splits hyphenated words (e.g. "real-time" → ["real", "time"]) and
+        strips punctuation so that Whisper's inconsistent hyphenation across
+        consecutive overlapping chunks does not defeat deduplication.
+
+        Returns
+        -------
+        tokens : list[str]
+            Normalised sub-word tokens.
+        orig_indices : list[int]
+            For each token, the index of the original word in *words* that
+            produced it.  Used to map a token-level match back to the number
+            of original words to skip.
+        """
+        tokens: list[str] = []
+        orig_indices: list[int] = []
+        for i, w in enumerate(words):
+            w_clean = w.lower().strip(".,!?;:'\"")
+            # Split on hyphen and en/em-dash so "real-time" → ["real", "time"]
+            for part in re.split(r"[-\u2013\u2014]", w_clean):
+                part = part.strip()
+                if part:
+                    tokens.append(part)
+                    orig_indices.append(i)
+        return tokens, orig_indices
+
+    @staticmethod
+    def _deduplicate_overlap(
+        prev_words: list[str], curr_words: list[str]
+    ) -> list[str]:
+        """Remove overlapping words at the boundary between chunks.
+
+        Expands hyphenated words into component tokens before comparison so
+        Whisper's inconsistent hyphenation (e.g. "real time" in one chunk vs
+        "real-time" in the next) is handled correctly.
+
+        Finds the longest suffix of *prev* tokens that equals a prefix of
+        *curr* tokens (case-insensitive), then maps the match back to the
+        original *curr_words* index to return only the new content.
+
+        Example
+        -------
+        >>> ASREngine._deduplicate_overlap(
+        ...     ["a", "real", "time"],
+        ...     ["real-time,", "fully", "offline"],
+        ... )
+        ['fully', 'offline']
+        """
+        if not prev_words or not curr_words:
+            return curr_words
+
+        prev_tokens, _ = ASREngine._expand_to_tokens(prev_words)
+        curr_tokens, curr_orig = ASREngine._expand_to_tokens(curr_words)
+
+        max_overlap = min(len(prev_tokens), len(curr_tokens))
+        best = 0
+
+        for k in range(1, max_overlap + 1):
+            if prev_tokens[-k:] == curr_tokens[:k]:
+                best = k
+
+        if best == 0:
+            return curr_words
+
+        # Map the last matched token back to its original word index and
+        # return everything after that word.
+        last_matched_orig = curr_orig[best - 1]
+        logger.debug(
+            "Dedup: stripped %d token(s) (%d original word(s)): %s",
+            best,
+            last_matched_orig + 1,
+            curr_words[: last_matched_orig + 1],
+        )
+        return curr_words[last_matched_orig + 1 :]
+
+    # ── Punctuation normalisation ───────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_punctuation(text: str) -> str:
+        """Strip the trailing period that Whisper auto-appends to every chunk.
+
+        Whisper systematically adds a period at the end of each transcription
+        segment, even when the speaker is mid-sentence.  This causes the
+        translator to treat each fragment as an independent sentence and the
+        TTS to use sentence-final intonation on every chunk.
+
+        Interrogative (?) and exclamatory (!) marks are preserved because they
+        are genuine prosodic cues that Whisper only produces when actually
+        warranted.
+        """
+        if not config.ASR_STRIP_TRAILING_PERIOD:
+            return text
+        # Strip trailing period(s) only — keep ? and !
+        text = re.sub(r"\.+\s*$", "", text).strip()
+        return text
+
+    # ── Sentence buffer management ──────────────────────────────────────────
+
+    def _flush_sentence_buffer(self) -> None:
+        """Join buffered fragments into one TextSegment and push to text_queue."""
+        if not self._sentence_buf:
+            return
+
+        sentence = " ".join(self._sentence_buf).strip()
+        self._sentence_buf.clear()
+
+        if not sentence:
+            return
+
+        # Re-add a proper sentence-ending period for the complete sentence
+        if sentence and sentence[-1] not in ".!?":
+            sentence += "."
+
+        logger.debug("Flushing sentence buffer → %r", sentence)
+        print(f"[SENT  #{self._sentence_chunk_id:>4d}] {sentence}", flush=True)
+
+        segment = TextSegment(
+            chunk_id=self._sentence_chunk_id,
+            text=sentence,
+            timestamp=time.perf_counter(),
+            capture_timestamp=self._sentence_capture_ts,
+        )
+        self._put(segment)
+
+    def _maybe_flush_timeout(self) -> None:
+        """Flush the sentence buffer if enough time elapsed since last text."""
+        if not self._sentence_buf:
+            return
+        if self._last_text_time <= 0:
+            return
+        elapsed = time.perf_counter() - self._last_text_time
+        if elapsed >= config.SENTENCE_BUFFER_TIMEOUT:
+            logger.debug("Sentence buffer timeout (%.1fs) — flushing.", elapsed)
+            self._flush_sentence_buffer()
 
     # ── Internal ────────────────────────────────────────────────────────────
 

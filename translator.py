@@ -84,6 +84,11 @@ class Translator:
                 continue
 
             if item is None:  # shutdown sentinel
+                # Propagate sentinel downstream so TTSEngine exits cleanly
+                try:
+                    self._tts_queue.put_nowait(None)
+                except queue.Full:
+                    pass
                 break
 
             assert isinstance(item, TextSegment)
