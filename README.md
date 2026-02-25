@@ -1,6 +1,7 @@
 # PolyglotTalk
 
-Real-time, fully **offline** Speech-to-Speech Translation (S2ST) running entirely on CPU — no cloud APIs, no GPU required.
+Real-time, fully **offline** Speech-to-Speech Translation (S2ST) — no cloud APIs, no data leaves your machine.
+ASR and translation run on **CPU**; TTS (IndicF5) automatically uses **CUDA** if a GPU is present, falling back to CPU.
 
 ```
 Microphone → [Whisper ASR] → [Argos Translate] → [IndicF5 TTS] → WAV Files
@@ -13,7 +14,10 @@ Speak English into your microphone; translated speech is synthesised and saved t
 ## Features
 
 - **Fully offline** — all models run locally after a one-time download
-- **CPU-only** — no GPU or CUDA required; works on any modern laptop
+- **CPU + optional CUDA** — ASR and translation always run on CPU; TTS (IndicF5) auto-detects CUDA and uses it if available, otherwise falls back to CPU
+- **Overlapping audio chunks** — consecutive 2.5 s windows share 1.0 s of audio so words at chunk boundaries are never cut off
+- **Sentence buffering** — ASR fragments accumulate into natural sentences before translation, giving the MT model better context
+- **Hyphen-aware deduplication** — overlap text is removed at word boundaries even when Whisper transcribes the same words differently across chunks (e.g. "real time" vs "real-time")
 - **True pipeline parallelism** — 4 threads run concurrently with ~4 s end-to-end latency
 - **No mic feedback** — TTS output saved to files, not played through speakers
 - **Auto-stop** — pipeline exits cleanly after 2.5 s of silence
@@ -28,7 +32,7 @@ Speak English into your microphone; translated speech is synthesised and saved t
 ```
 ============================================================
  PolyglotTalk v0.1 — Offline Speech-to-Speech Translation
- EN → HI  |  TTS: IndicF5 (cpu)  |  No cloud APIs
+ EN → HI  |  TTS: IndicF5 (cuda)  |  No cloud APIs
  TTS output saved to: output/chunk_NNNN.wav
 ============================================================
 ✓ Pipeline ready. Speak now… (Ctrl+C to stop)
@@ -88,7 +92,8 @@ When prompted, paste your [HuggingFace API token](https://huggingface.co/setting
 > **TTS output files:** Synthesised speech is saved to `output/chunk_NNNN.wav`
 > files (where N is the chunk ID). This avoids microphone feedback during
 > live translation and uses IndicF5, a high-quality neural TTS model for
-> Indian languages, running fully on your CPU (or GPU if available).
+> Indian languages. IndicF5 automatically runs on **CUDA** when a compatible
+> GPU is detected (`INDICF5_DEVICE = "auto"`), falling back to CPU otherwise.
 
 ---
 
@@ -191,11 +196,11 @@ polyglot-talk/
 
 All four threads run simultaneously. At steady state:
 
-- **Thread 1** records the next 2.5-second buffer while Thread 2 is still transcribing the current one
-- **Thread 2** transcribes while Thread 3 translates the previous chunk
-- **Thread 3** translates while Thread 4 synthesises and saves the chunk before that
+- **Thread 1** records the next chunk (2.5 s window, 1.5 s stride) while Thread 2 is still transcribing the current one. Each chunk overlaps the previous by 1.0 s so words at boundaries are never split.
+- **Thread 2** transcribes each chunk and deduplicates the overlapping text. Fragments accumulate in a sentence buffer and are only forwarded to Thread 3 when a natural sentence boundary is detected (silence gap ≥ 5 s or buffer ≥ 25 words).
+- **Thread 3** translates while Thread 4 synthesises and saves the chunk before that.
 
-End-to-end latency ≈ `chunk_duration + ASR_time + MT_time` ≈ **4 seconds** — not the sum of all stage durations.
+End-to-end latency ≈ `stride_duration + ASR_time + MT_time` ≈ **4–6 seconds** — not the sum of all stage durations.
 
 **Backpressure:** All queues use a drop-oldest strategy — if a downstream stage falls behind, the oldest unprocessed item is evicted to make room for the freshest one, so the pipeline always stays current.
 
@@ -212,7 +217,11 @@ Key values in [config.py](config.py):
 | Parameter | Default | Description |
 |---|---|---|
 | `SAMPLE_RATE` | `16000` Hz | Whisper requires 16 kHz mono |
-| `CHUNK_DURATION` | `2.5` s | Audio buffer size per ASR call |
+| `CHUNK_DURATION` | `2.5` s | Total audio window sent to Whisper per call |
+| `CHUNK_OVERLAP` | `1.0` s | Seconds of audio shared with the previous chunk; prevents words being cut at boundaries |
+| `SENTENCE_BUFFER_TIMEOUT` | `5.0` s | Flush the sentence buffer after this many seconds without new ASR text (must exceed CPU transcription gap) |
+| `SENTENCE_BUFFER_MAXWORDS` | `25` | Force-flush the sentence buffer when it reaches this many words |
+| `ASR_STRIP_TRAILING_PERIOD` | `True` | Remove the period Whisper auto-appends to every chunk; prevents MT treating mid-sentence fragments as complete sentences |
 | `RMS_SILENCE_THRESHOLD` | `0.0001` | Below this RMS, audio is treated as silence |
 | `ASR_MODEL_SIZE` | `"base.en"` | Whisper model variant |
 | `ASR_COMPUTE_TYPE` | `"int8"` | Quantization (int8 = fastest on CPU) |
