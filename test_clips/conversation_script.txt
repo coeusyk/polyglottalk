@@ -1,0 +1,12 @@
+# 10-sentence scripted conversation for context continuity testing
+# Simulates a real dialogue between two people meeting at a train station
+Hello, I am looking for the train to Delhi.
+Can you tell me which platform it leaves from?
+The train is scheduled to depart at three o'clock.
+Is the ticket counter still open at this hour?
+I need to buy two tickets for my family.
+How long does the journey from here to Delhi take?
+The express train takes about four hours.
+Thank you for your help, I really appreciate it.
+Where can I find a good restaurant near the station?
+I will wait here until the train arrives.
