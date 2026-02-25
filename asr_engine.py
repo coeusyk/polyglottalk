@@ -200,6 +200,11 @@ class ASREngine:
             print(f"[ASR   #{item.chunk_id:>4d}] {deduped_text}", flush=True)
 
             # ── Append to sentence buffer ──────────────────────────────────
+            # Check timeout BEFORE adding new text: if the previous buffer
+            # has been waiting longer than SENTENCE_BUFFER_TIMEOUT (e.g. the
+            # user paused then started a new sentence), flush the old content
+            # first so the new content starts a fresh sentence.
+            self._maybe_flush_timeout()
             if not self._sentence_buf:
                 self._sentence_chunk_id = item.chunk_id
                 self._sentence_capture_ts = item.timestamp
@@ -217,43 +222,84 @@ class ASREngine:
     # ── Overlap deduplication ───────────────────────────────────────────────
 
     @staticmethod
+    def _expand_to_tokens(
+        words: list[str],
+    ) -> tuple[list[str], list[int]]:
+        """Tokenise a word list for overlap comparison.
+
+        Splits hyphenated words (e.g. "real-time" → ["real", "time"]) and
+        strips punctuation so that Whisper's inconsistent hyphenation across
+        consecutive overlapping chunks does not defeat deduplication.
+
+        Returns
+        -------
+        tokens : list[str]
+            Normalised sub-word tokens.
+        orig_indices : list[int]
+            For each token, the index of the original word in *words* that
+            produced it.  Used to map a token-level match back to the number
+            of original words to skip.
+        """
+        tokens: list[str] = []
+        orig_indices: list[int] = []
+        for i, w in enumerate(words):
+            w_clean = w.lower().strip(".,!?;:'\"")
+            # Split on hyphen and en/em-dash so "real-time" → ["real", "time"]
+            for part in re.split(r"[-\u2013\u2014]", w_clean):
+                part = part.strip()
+                if part:
+                    tokens.append(part)
+                    orig_indices.append(i)
+        return tokens, orig_indices
+
+    @staticmethod
     def _deduplicate_overlap(
         prev_words: list[str], curr_words: list[str]
     ) -> list[str]:
         """Remove overlapping words at the boundary between chunks.
 
-        Finds the longest suffix of *prev_words* that equals a prefix of
-        *curr_words* (case-insensitive) and returns only the non-overlapping
-        tail of *curr_words*.
+        Expands hyphenated words into component tokens before comparison so
+        Whisper's inconsistent hyphenation (e.g. "real time" in one chunk vs
+        "real-time" in the next) is handled correctly.
+
+        Finds the longest suffix of *prev* tokens that equals a prefix of
+        *curr* tokens (case-insensitive), then maps the match back to the
+        original *curr_words* index to return only the new content.
 
         Example
         -------
         >>> ASREngine._deduplicate_overlap(
-        ...     ["hello", "world", "how", "are"],
-        ...     ["how", "are", "you", "doing"],
+        ...     ["a", "real", "time"],
+        ...     ["real-time,", "fully", "offline"],
         ... )
-        ['you', 'doing']
+        ['fully', 'offline']
         """
         if not prev_words or not curr_words:
             return curr_words
 
-        max_overlap = min(len(prev_words), len(curr_words))
+        prev_tokens, _ = ASREngine._expand_to_tokens(prev_words)
+        curr_tokens, curr_orig = ASREngine._expand_to_tokens(curr_words)
+
+        max_overlap = min(len(prev_tokens), len(curr_tokens))
         best = 0
 
-        prev_lower = [w.lower().strip(".,!?;:") for w in prev_words]
-        curr_lower = [w.lower().strip(".,!?;:") for w in curr_words]
-
         for k in range(1, max_overlap + 1):
-            if prev_lower[-k:] == curr_lower[:k]:
+            if prev_tokens[-k:] == curr_tokens[:k]:
                 best = k
 
-        if best > 0:
-            logger.debug(
-                "Dedup: stripped %d overlapping word(s): %s",
-                best,
-                curr_words[:best],
-            )
-        return curr_words[best:]
+        if best == 0:
+            return curr_words
+
+        # Map the last matched token back to its original word index and
+        # return everything after that word.
+        last_matched_orig = curr_orig[best - 1]
+        logger.debug(
+            "Dedup: stripped %d token(s) (%d original word(s)): %s",
+            best,
+            last_matched_orig + 1,
+            curr_words[: last_matched_orig + 1],
+        )
+        return curr_words[last_matched_orig + 1 :]
 
     # ── Punctuation normalisation ───────────────────────────────────────────
 

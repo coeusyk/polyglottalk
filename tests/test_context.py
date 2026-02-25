@@ -235,8 +235,20 @@ def test_empty_text_skipped(make_translator) -> None:
 
         t.run()
 
-    # tts_queue should be empty since the input was whitespace
-    assert tts_q.empty(), "tts_queue should be empty for whitespace input"
+    # Translator propagates a shutdown sentinel (None) to tts_queue so that
+    # downstream TTSEngine can exit cleanly.  We drain it here and confirm
+    # that no real TranslatedSegment was enqueued for the whitespace input.
+    from models import TranslatedSegment
+    items = []
+    while not tts_q.empty():
+        items.append(tts_q.get_nowait())
+
+    real_segments = [i for i in items if isinstance(i, TranslatedSegment)]
+    assert real_segments == [], (
+        f"Expected no TranslatedSegments for whitespace input, got {real_segments}"
+    )
+    sentinels = [i for i in items if i is None]
+    assert len(sentinels) == 1, f"Expected exactly one shutdown sentinel, got {items}"
     print("✓ empty text skipped")
 
 

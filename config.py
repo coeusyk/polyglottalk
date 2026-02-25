@@ -29,9 +29,9 @@ BLOCK_SIZE: int = int(SAMPLE_RATE * CHUNK_DURATION)  # 40 000 samples
 #     with overlapping re-transcription achieves 3.3 s latency.
 #   • Whisper long-form (OpenAI) — overlapping 30 s windows with timestamp-
 #     based stitching avoid mid-word cuts.
-CHUNK_OVERLAP: float = 0.5        # seconds of overlap between consecutive chunks
-OVERLAP_SAMPLES: int = int(SAMPLE_RATE * CHUNK_OVERLAP)  # 8 000 samples
-STRIDE_SAMPLES: int = BLOCK_SIZE - OVERLAP_SAMPLES        # 32 000 samples
+CHUNK_OVERLAP: float = 1.0        # seconds of overlap between consecutive chunks
+OVERLAP_SAMPLES: int = int(SAMPLE_RATE * CHUNK_OVERLAP)  # 16 000 samples (~2.5 words)
+STRIDE_SAMPLES: int = BLOCK_SIZE - OVERLAP_SAMPLES        # 24 000 samples
 
 # WSLg RDP audio bridge delivers lower amplitude than native Linux mics.
 # Measured speech RMS ~0.0003; true silence ~0.00001. Threshold at 0.0001.
@@ -41,7 +41,15 @@ RMS_SILENCE_THRESHOLD: float = 0.0001  # chunks below this RMS are dropped
 # ASR fragments are buffered until a natural sentence boundary is detected.
 # This ensures the translator and TTS receive complete sentences rather than
 # mid-word fragments with artificial trailing periods.
-SENTENCE_BUFFER_TIMEOUT: float = 1.5   # flush after this many seconds of no new text
+#
+# SENTENCE_BUFFER_TIMEOUT must be larger than the natural gap between consecutive
+# ASR text outputs on CPU:
+#   gap = STRIDE_SAMPLES/SAMPLE_RATE + whisper_transcription_time
+#       = (CHUNK_DURATION - CHUNK_OVERLAP) + CHUNK_DURATION * ~0.8
+#       ≈ 1.5s + 2.0s = 3.5s on CPU base.en int8
+# We add a generous safety margin so brief speech pauses do NOT cause premature
+# flushes.  The silence-based flush (RMS filter) handles genuine sentence ends.
+SENTENCE_BUFFER_TIMEOUT: float = 5.0   # flush after this many seconds of no new text
 SENTENCE_BUFFER_MAXWORDS: int = 25     # force-flush when buffer exceeds this many words
 
 # ── Queue ───────────────────────────────────────────────────────────────────
