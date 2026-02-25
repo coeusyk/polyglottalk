@@ -19,9 +19,11 @@
 - [ ] Add safety guard: never return an empty string — fall back to `full_translation` as-is if trimmed result is empty
 
 ### 1.3 Threading & Shutdown
-- [ ] Confirm `pyttsx3.init()` is the **first line** inside `TTSEngine.run()` — not in `__init__()`
+- [ ] Confirm `AutoModel.from_pretrained()` is called inside `TTSEngine.run()` with `low_cpu_mem_usage=False` — not in `__init__()` — to avoid meta tensor crash during vocoder init
+- [ ] Confirm IndicF5 model is loaded before the main queue loop (one-time initialization)
 - [ ] Replace blocking `queue.put()` calls with `put(item, timeout=1.0)` inside a loop that checks `stop_event`
 - [ ] Confirm all 4 threads are set as daemon threads — Ctrl+C must exit cleanly without hanging
+- [ ] Confirm HuggingFace authentication is set up before running (`huggingface-cli login`)
 
 ### 1.4 Latency Logging *(required for experiments)*
 - [ ] Replace raw `str`/`ndarray` in queues with `AudioChunk`, `TextSegment`, `TranslatedSegment` dataclasses, each carrying `chunk_id: int` and `timestamp: float`
@@ -37,7 +39,7 @@
 - [ ] `test_audio_capture.py` — record 3s from mic, assert WAV file size > 0 and RMS > 0.001
 - [ ] `test_asr.py` — transcribe a known `hello.wav` clip, assert "hello" appears in output
 - [ ] `test_translator.py` — translate "Hello, how are you?" en→hi, assert Devanagari characters in output
-- [ ] `test_tts.py` — speak "Testing one two three" inside a child thread, assert no exception
+- [ ] `test_tts.py` — synthesise "नमस्ते, यह एक परीक्षण है।" via IndicF5 using Hindi reference audio, assert 24 kHz WAV file is created with non-zero length
 - [ ] `test_context.py` — unit test empty context, 1-segment, 2-segment, fuzzy trim, empty input skip, repeated input skip
 - [ ] `test_pipeline_e2e.py` — feed 3 WAV chunks via mock AudioCapture, assert 2+ translated outputs within 15s, assert all threads shut down within 5s
 
@@ -96,9 +98,11 @@
 ### 3.1 Sections — Write in This Order
 
 #### Step 1 — System Design *(write first, no results needed)*
-- [ ] Describe the 4-thread pipeline: AudioCapture → ASR → Translator → TTS
+- [ ] Describe the 4-thread pipeline: AudioCapture → ASR → Translator → TTS (IndicF5 neural model)
 - [ ] Include the pipeline architecture diagram (use the project flowchart)
 - [ ] Include the threading timing diagram (from the implementation plan) showing pipelined parallel execution
+- [ ] Explain TTS upgrade: IndicF5 provides high-quality neural synthesis for Indian languages (Hindi) vs. legacy espeak-ng
+- [ ] Explain voice cloning: IndicF5 uses a reference audio prompt to shape prosody and speaker characteristics
 - [ ] Write **Algorithm 1 — Context-Aware Translation**:
   ```
   Input:  text_chunk, context_window (deque, maxlen=2)
@@ -127,11 +131,12 @@
 - [ ] Insert context continuity comparison table (Experiment 4)
 
 #### Step 4 — Discussion
-- [ ] State which ASR model you recommend and why (accuracy vs latency tradeoff)
-- [ ] State which MT model you recommend and why
+- [ ] State which TTS model you recommend: IndicF5 for Indian language quality/clarity vs. espeak-ng for robustness/availability
+- [ ] Mention GatedReppo access requirement and HuggingFace authentication as a practical deployment consideration
 - [ ] Quantify the improvement from context continuity — this is your key finding
-- [ ] Honestly state limitations: no voice cloning, fixed 2.5s buffer, pyttsx3 robotic voice
-- [ ] Note that better Indian language support (e.g., Sarvam Translate) is a direct upgrade path
+- [ ] Honestly state limitations: IndicF5 requires gated repo access and HF authentication, fixed 2.5s buffer, voice cloning limited to provided reference audio
+- [ ] Note that custom voice cloning is possible by providing your own Hindi reference audio in `prompts/` directory
+- [ ] Note that IndicF5 supports 11 Indian languages — future work can support more target languages beyond Hindi
 
 #### Step 5 — Introduction *(write after results are known)*
 - [ ] Open with the real-world problem: multilingual India, unreliable connectivity, no affordable offline calling translation
