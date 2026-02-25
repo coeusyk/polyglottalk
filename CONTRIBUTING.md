@@ -120,7 +120,7 @@ chore(deps): bump faster-whisper to 1.2.0
 - [`uv`](https://github.com/astral-sh/uv) (recommended) or `pip`
 - System packages:
   ```bash
-  sudo apt install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-utils
+  sudo apt-get install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-utils
   ```
 
 ### Create a virtual environment
