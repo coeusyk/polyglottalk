@@ -11,9 +11,13 @@ What it downloads
 
 2. Argos Translate en→hi language pack — ~100 MB
    Installed to:  ~/.local/share/argos-translate/packages/  (Linux)
-                  %LOCALAPPDATA%\argos-translate\packages\  (Windows)
+                  %LOCALAPPDATA%\\argos-translate\\packages\\  (Windows)
 
-Total:  ~250–350 MB depending on cached HuggingFace files.
+3. AI4Bharat IndicF5 TTS model — ~400 MB (float32)
+   Cached to:  ~/.cache/huggingface/hub/models--ai4bharat--IndicF5/
+   Hindi reference audio prompt saved to:  prompts/HIN_F_HAPPY_00001.wav
+
+Total:  ~650-750 MB depending on cached HuggingFace files.
 
 Usage
 -----
@@ -48,7 +52,7 @@ def _fail(msg: str) -> None:
 # ── Step 1: faster-whisper ────────────────────────────────────────────────────
 
 def download_asr_model():
-    print("\n[1/2] Downloading faster-whisper model…")
+    print("\n[1/3] Downloading faster-whisper model…")
     _info(f"Model: {config.ASR_MODEL_SIZE}  compute: {config.ASR_COMPUTE_TYPE}  device: {config.ASR_DEVICE}")
 
     from faster_whisper import WhisperModel
@@ -85,7 +89,7 @@ def verify_asr_model(model) -> None:
 # ── Step 2: Argos Translate ──────────────────────────────────────────────────
 
 def download_translation_model() -> None:
-    print("\n[2/2] Downloading Argos Translate language pack…")
+    print("\n[2/3] Downloading Argos Translate language pack…")
     _info(f"Language pair: {config.SOURCE_LANG} → {config.TARGET_LANG}")
 
     import argostranslate.package
@@ -140,56 +144,64 @@ def verify_translation_model() -> None:
     _ok(f"Translation smoke test passed: \"Hello\" → \"{result.strip()}\"")
 
 
-# ── Step 3: pyttsx3 ──────────────────────────────────────────────────────────
+# ── Step 3: AI4Bharat IndicF5 TTS ───────────────────────────────────────────
 
-def verify_tts() -> None:
-    print("\n[3/3] Verifying pyttsx3 / SAPI5…")
-    # pyttsx3 must be inited in the calling thread (SAPI5 COM requirement)
-    import threading
+def download_tts_model() -> None:
+    """Download IndicF5 model weights and a Hindi reference audio prompt."""
+    print("\n[3/3] Downloading AI4Bharat IndicF5 TTS model…")
+    _info(f"Model: {config.INDICF5_MODEL_ID}  device: {config.INDICF5_DEVICE}")
 
-    results: dict[str, object] = {}
+    from huggingface_hub import snapshot_download  # noqa: PLC0415
 
-    def _check() -> None:
-        try:
-            import pyttsx3  # noqa: PLC0415
+    # Pre-download all model files to cache WITHOUT instantiating the model.
+    # Instantiation (which loads the vocoder) happens later in TTSThread
+    # where it doesn't conflict with transformers' meta-tensor initialization.
+    t0 = time.perf_counter()
+    _cache_dir = snapshot_download(config.INDICF5_MODEL_ID)
+    elapsed = time.perf_counter() - t0
+    _ok(f"IndicF5 model files downloaded to cache in {elapsed:.1f}s")
 
-            engine = pyttsx3.init()
-            voices = engine.getProperty("voices")
-            voice_names = [v.name for v in voices]
-            results["voices"] = voice_names
-            engine.stop()
-        except Exception as exc:  # pylint: disable=broad-except
-            results["error"] = str(exc)
+    # ── Download Hindi reference audio prompt ─────────────────────────────
+    from pathlib import Path as _Path  # noqa: PLC0415
+    from huggingface_hub import hf_hub_download  # noqa: PLC0415
 
-    t = threading.Thread(target=_check)
-    t.start()
-    t.join(timeout=10)
-
-    if "error" in results:
-        _fail(f"pyttsx3 init failed: {results['error']}")
+    ref_dest = _Path(config.INDICF5_REF_AUDIO_PATH)
+    if ref_dest.exists():
+        _ok(f"Hindi reference audio already present: {ref_dest}")
         return
 
-    names = results.get("voices", [])
-    if isinstance(names, list):
-        names = names
-    else:
-        names = []
+    ref_dest.parent.mkdir(parents=True, exist_ok=True)
+    ref_filename = ref_dest.name  # e.g. HIN_F_HAPPY_00001.wav
 
-    _ok(f"pyttsx3 SAPI5 available — {len(names)} voice(s) found:")
-    for name in names[:6]:  # show at most 6
-        print(f"    • {name}")
-
-    hi_voice = next(
-        (n for n in names if "hindi" in n.lower()), None
-    )
-    if hi_voice:
-        _ok(f"Hindi voice detected: {hi_voice}")
-    else:
-        print(
-            "  ! No Hindi voice found.\n"
-            "    Install via: Settings → Time & Language → Language → "
-            "Add Hindi → enable Text-to-speech."
+    _info(f"Downloading reference audio '{ref_filename}' from {config.INDICF5_MODEL_ID}…")
+    
+    try:
+        downloaded = hf_hub_download(
+            repo_id=config.INDICF5_MODEL_ID,
+            filename=f"prompts/{ref_filename}",
         )
+        import shutil  # noqa: PLC0415
+        shutil.copy2(downloaded, ref_dest)
+        _ok(f"Hindi reference audio saved → {ref_dest}")
+
+    except Exception as exc:  # pylint: disable=broad-except
+        # Fallback: try the Punjabi prompt that ships in the README example
+        _info(f"'{ref_filename}' not found ({exc}); attempting Punjabi fallback…")
+        try:
+            fallback_file = "PAN_F_HAPPY_00001.wav"
+            downloaded = hf_hub_download(
+                repo_id=config.INDICF5_MODEL_ID,
+                filename=f"prompts/{fallback_file}",
+            )
+            import shutil  # noqa: PLC0415
+            shutil.copy2(downloaded, ref_dest)
+            _ok(f"Fallback Punjabi reference audio saved → {ref_dest}")
+        except Exception as exc2:  # pylint: disable=broad-except
+            _fail(
+                f"Could not download any reference audio: {exc2}\n"
+                "   Please manually place a short (~10s) Hindi WAV file at "
+                f"{ref_dest} and re-run."
+            )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -215,7 +227,7 @@ def main() -> None:
     if not args.skip_verify:
         verify_translation_model()
 
-    verify_tts()
+    download_tts_model()
 
     print("\n" + "=" * 60)
     print(" ✓ All models ready for offline use.")
