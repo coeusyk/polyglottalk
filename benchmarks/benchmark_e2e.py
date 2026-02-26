@@ -10,15 +10,14 @@ Usage
 
 Output
 ------
-    results/e2e_latency.csv
+    results/e2e/e2e_latency_mms.csv
 """
 
 from __future__ import annotations
 
-import csv
 import os
+import random
 import sys
-import threading
 import time
 
 # Project root on path
@@ -27,40 +26,51 @@ import config  # noqa: E402
 
 import numpy as np  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(__file__))
+import system_meta  # noqa: E402
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
-GROUND_TRUTH = os.path.join(PROJECT_ROOT, "test_clips", "ground_truth.txt")
-CLIPS_DIR = os.path.join(PROJECT_ROOT, "test_clips")
-RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
-RESULTS_CSV = os.path.join(RESULTS_DIR, "e2e_latency.csv")
+LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-clean")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "e2e")
+RESULTS_CSV = os.path.join(RESULTS_DIR, "e2e_latency_mms.csv")
 
 NUM_TRIALS = 20
 
+# Maximum audio clips available for the random trial pool (>= NUM_TRIALS).
+# A random seed is drawn once per run and stored in the output metadata.
+MAX_CLIPS: int = 500
 
-def _load_ground_truth() -> list[tuple[str, str]]:
-    """Return list of (wav_filename, transcription) from ground_truth.txt."""
-    entries = []
-    with open(GROUND_TRUTH, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            fname, text = line.split("|", 1)
-            entries.append((fname.strip(), text.strip()))
+
+def _load_librispeech() -> list[tuple[str, str]]:
+    """Return list of (flac_path, reference_text) from LibriSpeech dev-clean.
+
+    Walks LIBRISPEECH_DIR, reads every ``*.trans.txt`` file, and maps each
+    ``UTTID TEXT`` line to its corresponding .flac file on disk.
+    Reference text is lowercased from the original ALL-CAPS transcripts.
+    """
+    import pathlib
+
+    entries: list[tuple[str, str]] = []
+    for trans_file in sorted(pathlib.Path(LIBRISPEECH_DIR).rglob("*.trans.txt")):
+        chapter_dir = trans_file.parent
+        with open(trans_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                uttid, text = line.split(" ", 1)
+                flac_path = str(chapter_dir / f"{uttid}.flac")
+                if os.path.exists(flac_path):
+                    entries.append((flac_path, text.lower()))
     return entries
 
 
-def _load_audio(wav_path: str) -> np.ndarray:
-    """Load WAV as float32 16 kHz mono."""
-    import scipy.io.wavfile as wavfile
+def _load_audio(audio_path: str) -> np.ndarray:
+    """Load a FLAC or WAV file as float32 16 kHz mono."""
+    import soundfile as sf
 
-    sr, data = wavfile.read(wav_path)
-    if data.dtype == np.int16:
-        data = data.astype(np.float32) / 32768.0
-    elif data.dtype == np.int32:
-        data = data.astype(np.float32) / 2147483648.0
-    elif data.dtype != np.float32:
-        data = data.astype(np.float32)
+    data, sr = sf.read(audio_path, dtype="float32", always_2d=False)
 
     if data.ndim > 1:
         data = data.mean(axis=1)
@@ -68,7 +78,7 @@ def _load_audio(wav_path: str) -> np.ndarray:
     if sr != 16000:
         from scipy.signal import resample
         num_samples = int(len(data) * 16000 / sr)
-        data = resample(data, num_samples).astype(np.float32)
+        data = resample(data, num_samples).astype(np.float32) # type: ignore
 
     return data
 
@@ -76,19 +86,32 @@ def _load_audio(wav_path: str) -> np.ndarray:
 def run_benchmark() -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    entries = _load_ground_truth()
-    print(f"Loaded {len(entries)} test clips.\n")
+    all_entries = _load_librispeech()
+    print(f"Discovered {len(all_entries)} clips in LibriSpeech dev-clean.\n")
 
-    # Pre-load audio
-    audio_clips: list[tuple[str, np.ndarray]] = []
-    for fname, _text in entries:
-        wav_path = os.path.join(CLIPS_DIR, fname)
-        if os.path.exists(wav_path):
-            audio_clips.append((fname, _load_audio(wav_path)))
-
-    if not audio_clips:
-        print("ERROR: No audio files found. Run generate_test_clips.py first.")
+    if not all_entries:
+        print(f"ERROR: No FLAC files found under {LIBRISPEECH_DIR}")
         sys.exit(1)
+
+    # ── Random sample for this run ─────────────────────────────────────────
+    seed = random.randrange(2 ** 32)
+    rng = random.Random(seed)
+    pool = rng.sample(all_entries, min(MAX_CLIPS, len(all_entries)))
+    sampled = rng.sample(pool, min(NUM_TRIALS, len(pool)))
+    print(f"Random seed: {seed}  |  Pool: {len(pool)}  |  Trials: {len(sampled)}\n")
+
+    # Collect system / config snapshot (before model loads)
+    meta = system_meta.collect()
+    meta["dataset"] = "LibriSpeech dev-clean"
+    meta["dataset_total_clips"] = str(len(all_entries))
+    meta["max_clip_pool"] = str(MAX_CLIPS)
+    meta["num_trials"] = str(len(sampled))
+    meta["random_seed"] = str(seed)
+
+    # Pre-load audio for the sampled clips
+    audio_clips: list[tuple[str, np.ndarray]] = []
+    for flac_path, _text in sampled:
+        audio_clips.append((flac_path, _load_audio(flac_path)))
 
     print(f"Pre-loaded {len(audio_clips)} audio files.\n")
 
@@ -112,19 +135,31 @@ def run_benchmark() -> None:
         sys.exit(1)
     print(f"  ✓ Translation model loaded (Argos en→hi)")
 
-    print("Preparing TTS engine...")
-    import pyttsx3
-    # TTS must be used in the thread that creates it (COM/SAPI5 on Windows)
+    print("Loading MMS-TTS model...")
+    import torch
+    import soundfile as sf
+    from transformers import VitsModel, VitsTokenizer
 
-    print(f"\nRunning {NUM_TRIALS} E2E trials...\n")
+    tts_device = config.MMS_TTS_DEVICE
+    if tts_device == "auto":
+        tts_device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # ── Run trials ───────────────────────────────────────────────────────────
+    tts_tokenizer = VitsTokenizer.from_pretrained(config.MMS_TTS_MODEL_ID)
+    tts_model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
+    tts_model = tts_model.to(tts_device) # type: ignore
+    tts_model.eval()
+
+    tts_output_dir = os.path.join(PROJECT_ROOT, config.TTS_OUTPUT_DIR, "e2e_benchmark")
+    os.makedirs(tts_output_dir, exist_ok=True)
+    print(f"  ✓ MMS-TTS model loaded (device={tts_device}, model={config.MMS_TTS_MODEL_ID})")
+
+    print(f"\nRunning {len(audio_clips)} E2E trials...\n")
+
+    # ── Run trials ────────────────────────────────────────────────────────
     all_rows: list[dict] = []
 
-    for trial in range(1, NUM_TRIALS + 1):
-        # Pick clip (cycle through available clips)
-        clip_idx = (trial - 1) % len(audio_clips)
-        fname, audio = audio_clips[clip_idx]
+    for trial, (flac_path, audio) in enumerate(audio_clips, 1):
+        uttid = os.path.splitext(os.path.basename(flac_path))[0]
 
         # ── ASR stage ────────────────────────────────────────────────────────
         t_asr_start = time.perf_counter()
@@ -149,33 +184,24 @@ def run_benchmark() -> None:
         mt_time = t_mt_end - t_mt_start
 
         # ── TTS stage ────────────────────────────────────────────────────────
-        # Run TTS in a separate thread (COM requirement on Windows)
-        tts_time_result = [0.0]
-        tts_error = [None]
-
-        def _tts_worker():
-            try:
-                engine = pyttsx3.init()
-                engine.setProperty("rate", config.TTS_RATE)
-                t_tts_start = time.perf_counter()
-                engine.say(translated)
-                engine.runAndWait()
-                tts_time_result[0] = time.perf_counter() - t_tts_start
-                engine.stop()
-            except Exception as exc:
-                tts_error[0] = exc
-                tts_time_result[0] = 0.0
-
-        tts_thread = threading.Thread(target=_tts_worker)
-        tts_thread.start()
-        tts_thread.join(timeout=30)
-
-        tts_time = tts_time_result[0]
+        out_path = os.path.join(tts_output_dir, f"bench_chunk_{trial:04d}.wav")
+        t_tts_start = time.perf_counter()
+        try:
+            inputs = tts_tokenizer(translated, return_tensors="pt")
+            inputs = {k: v.to(tts_device) for k, v in inputs.items()}
+            with torch.no_grad():
+                audio_out = tts_model(**inputs)
+            waveform = audio_out.waveform[0].squeeze().cpu().numpy()
+            sf.write(out_path, waveform.astype(np.float32),
+                     samplerate=tts_model.config.sampling_rate)
+        except Exception as exc:
+            print(f"  WARNING: MMS-TTS synthesis failed for trial {trial}: {exc}")
+        tts_time = time.perf_counter() - t_tts_start
         total_e2e = asr_time + mt_time + tts_time
 
         all_rows.append({
             "trial": trial,
-            "clip": fname,
+            "clip": uttid,
             "transcript": transcript,
             "translation": translated,
             "asr_time_s": f"{asr_time:.4f}",
@@ -200,38 +226,32 @@ def run_benchmark() -> None:
         "e2e": (np.mean(e2e_times), np.std(e2e_times)),
     }
 
-    # ── Write CSV ────────────────────────────────────────────────────────────
-    with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "trial", "clip", "transcript", "translation",
-            "asr_time_s", "mt_time_s", "tts_time_s", "total_e2e_s",
-        ])
-        writer.writeheader()
-        writer.writerows(all_rows)
+    # Append MEAN/STD summary rows to the data block
+    all_rows.append({
+        "trial": "MEAN", "clip": "", "transcript": "", "translation": "",
+        "asr_time_s": f"{stats['asr'][0]:.4f}",
+        "mt_time_s": f"{stats['mt'][0]:.4f}",
+        "tts_time_s": f"{stats['tts'][0]:.4f}",
+        "total_e2e_s": f"{stats['e2e'][0]:.4f}",
+    })
+    all_rows.append({
+        "trial": "STD", "clip": "", "transcript": "", "translation": "",
+        "asr_time_s": f"{stats['asr'][1]:.4f}",
+        "mt_time_s": f"{stats['mt'][1]:.4f}",
+        "tts_time_s": f"{stats['tts'][1]:.4f}",
+        "total_e2e_s": f"{stats['e2e'][1]:.4f}",
+    })
 
-        # Summary row
-        writer.writerow({
-            "trial": "MEAN",
-            "clip": "",
-            "transcript": "",
-            "translation": "",
-            "asr_time_s": f"{stats['asr'][0]:.4f}",
-            "mt_time_s": f"{stats['mt'][0]:.4f}",
-            "tts_time_s": f"{stats['tts'][0]:.4f}",
-            "total_e2e_s": f"{stats['e2e'][0]:.4f}",
-        })
-        writer.writerow({
-            "trial": "STD",
-            "clip": "",
-            "transcript": "",
-            "translation": "",
-            "asr_time_s": f"{stats['asr'][1]:.4f}",
-            "mt_time_s": f"{stats['mt'][1]:.4f}",
-            "tts_time_s": f"{stats['tts'][1]:.4f}",
-            "total_e2e_s": f"{stats['e2e'][1]:.4f}",
-        })
-
-    print(f"\n✓ Results saved to {RESULTS_CSV}")
+    # ── Write CSV (metadata in .meta.json sidecar) ──────────────────────────────────────
+    system_meta.write_csv(
+        RESULTS_CSV,
+        fieldnames=["trial", "clip", "transcript", "translation",
+                    "asr_time_s", "mt_time_s", "tts_time_s", "total_e2e_s"],
+        rows=all_rows,
+        meta=meta,
+    )
+    print(f"✓ Results saved to {RESULTS_CSV}")
+    print(f"  (metadata sidecar: {RESULTS_CSV.replace('.csv', '.meta.json')})")
 
     # Print paper-ready table
     print(f"\n{'=' * 60}")

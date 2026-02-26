@@ -15,8 +15,8 @@ Output
 
 from __future__ import annotations
 
-import csv
 import os
+import random
 import sys
 import time
 
@@ -27,27 +27,59 @@ import config  # noqa: E402  — must be first project import
 import numpy as np  # noqa: E402
 from faster_whisper import WhisperModel  # noqa: E402
 
+# benchmarks/ is already the cwd-equivalent when running as a package
+sys.path.insert(0, os.path.dirname(__file__))
+import system_meta  # noqa: E402
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
-GROUND_TRUTH = os.path.join(PROJECT_ROOT, "test_clips", "ground_truth.txt")
-CLIPS_DIR = os.path.join(PROJECT_ROOT, "test_clips")
-RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-clean")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "asr")
 RESULTS_CSV = os.path.join(RESULTS_DIR, "asr_results.csv")
 
 MODEL_SIZES = ["tiny.en", "base.en", "small.en"]
 
+# Maximum number of clips sampled per model run.
+# A fresh random seed is drawn for each model so results are statistically
+# independent; the seed is stored in the CSV metadata for reproducibility.
+MAX_CLIPS: int = 500
+
 
 # ── WER calculation ─────────────────────────────────────────────────────────
 
+import re as _re
+
+def _normalize(text: str) -> list[str]:
+    """Lowercase and strip all punctuation, returning a word token list.
+
+    Standard ASR WER normalization (NIST sclite convention): remove every
+    character that is not a letter, digit, apostrophe-within-word, or
+    whitespace so that "captors." and "captors" are treated identically.
+    Contractions such as "don't" are kept intact.
+    """
+    # Lower-case first
+    text = text.lower()
+    # Remove sentence-boundary and other punctuation, but keep intra-word
+    # apostrophes (e.g. "don't" → "don't", not "dont")
+    text = _re.sub(r"[^\w\s']", "", text)          # strip all non-word except '
+    text = _re.sub(r"(?<!\w)'|'(?!\w)", "", text)  # strip leading/trailing '
+    return text.split()
+
+
 def _word_error_rate(reference: str, hypothesis: str) -> float:
-    """Compute WER using Levenshtein distance on word sequences."""
-    ref_words = reference.lower().split()
-    hyp_words = hypothesis.lower().split()
+    """Compute WER using Levenshtein edit distance on normalized word sequences.
+
+    Both reference and hypothesis are normalized (lowercased, punctuation
+    stripped) before comparison so that capitalisation and trailing periods
+    emitted by Whisper do not inflate the error rate.
+    """
+    ref_words = _normalize(reference)
+    hyp_words = _normalize(hypothesis)
 
     if not ref_words:
         return 0.0 if not hyp_words else 1.0
 
-    # Dynamic programming — standard edit distance
+    # Standard DP edit distance
     d = [[0] * (len(hyp_words) + 1) for _ in range(len(ref_words) + 1)]
     for i in range(len(ref_words) + 1):
         d[i][0] = i
@@ -66,41 +98,45 @@ def _word_error_rate(reference: str, hypothesis: str) -> float:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _load_ground_truth() -> list[tuple[str, str]]:
-    """Return list of (wav_filename, transcription) from ground_truth.txt."""
-    entries = []
-    with open(GROUND_TRUTH, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            fname, text = line.split("|", 1)
-            entries.append((fname.strip(), text.strip()))
+def _load_librispeech() -> list[tuple[str, str]]:
+    """Return list of (flac_path, reference_text) from LibriSpeech dev-clean.
+
+    Walks LIBRISPEECH_DIR, reads every ``*.trans.txt`` file, and maps each
+    ``UTTID TEXT`` line to its corresponding .flac file on disk.
+    Reference text is lowercased from the original ALL-CAPS transcripts.
+    """
+    import pathlib
+
+    entries: list[tuple[str, str]] = []
+    for trans_file in sorted(pathlib.Path(LIBRISPEECH_DIR).rglob("*.trans.txt")):
+        chapter_dir = trans_file.parent
+        with open(trans_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                uttid, text = line.split(" ", 1)
+                flac_path = str(chapter_dir / f"{uttid}.flac")
+                if os.path.exists(flac_path):
+                    entries.append((flac_path, text.lower()))
     return entries
 
 
-def _load_audio(wav_path: str) -> np.ndarray:
-    """Load WAV file as float32 numpy array at 16 kHz."""
-    import scipy.io.wavfile as wavfile
+def _load_audio(audio_path: str) -> np.ndarray:
+    """Load a FLAC or WAV file as float32 numpy array at 16 kHz mono."""
+    import soundfile as sf
 
-    sr, data = wavfile.read(wav_path)
-    # Convert to float32 in [-1, 1]
-    if data.dtype == np.int16:
-        data = data.astype(np.float32) / 32768.0
-    elif data.dtype == np.int32:
-        data = data.astype(np.float32) / 2147483648.0
-    elif data.dtype != np.float32:
-        data = data.astype(np.float32)
+    data, sr = sf.read(audio_path, dtype="float32", always_2d=False)
 
     # Convert stereo to mono
     if data.ndim > 1:
         data = data.mean(axis=1)
 
-    # Resample to 16 kHz if needed
+    # Resample to 16 kHz if needed (LibriSpeech is already 16 kHz)
     if sr != 16000:
         from scipy.signal import resample
         num_samples = int(len(data) * 16000 / sr)
-        data = resample(data, num_samples).astype(np.float32)
+        data = resample(data, num_samples).astype(np.float32) # type: ignore
 
     return data
 
@@ -110,22 +146,19 @@ def _load_audio(wav_path: str) -> np.ndarray:
 def run_benchmark() -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    entries = _load_ground_truth()
-    print(f"Loaded {len(entries)} test clips from ground_truth.txt\n")
+    all_entries = _load_librispeech()
+    print(f"Discovered {len(all_entries)} clips in LibriSpeech dev-clean.")
+    print(f"Will randomly sample {MAX_CLIPS} clips per model.\n")
 
-    # Pre-load all audio
-    audio_data: dict[str, np.ndarray] = {}
-    for fname, _text in entries:
-        wav_path = os.path.join(CLIPS_DIR, fname)
-        if not os.path.exists(wav_path):
-            print(f"  ⚠ Missing: {wav_path} — run generate_test_clips.py first")
-            continue
-        audio_data[fname] = _load_audio(wav_path)
-    print(f"Pre-loaded {len(audio_data)} audio files.\n")
-
-    if not audio_data:
-        print("ERROR: No audio files found. Run generate_test_clips.py first.")
+    if not all_entries:
+        print(f"ERROR: No FLAC files found under {LIBRISPEECH_DIR}")
         sys.exit(1)
+
+    # Collect system / config snapshot once (before any model load)
+    meta = system_meta.collect()
+    meta["dataset"] = "LibriSpeech dev-clean"
+    meta["dataset_total_clips"] = str(len(all_entries))
+    meta["max_clips_per_model"] = str(MAX_CLIPS)
 
     all_rows: list[dict] = []
     summary_rows: list[dict] = []
@@ -134,6 +167,18 @@ def run_benchmark() -> None:
         print(f"{'=' * 60}")
         print(f"  Model: {model_size}")
         print(f"{'=' * 60}")
+
+        # ── Independent random sample for this model ──────────────────────
+        seed = random.randrange(2 ** 32)
+        rng = random.Random(seed)
+        sample = rng.sample(all_entries, min(MAX_CLIPS, len(all_entries)))
+        print(f"  Random seed: {seed}  |  Clips sampled: {len(sample)}")
+
+        # Load audio only for the sampled clips
+        print(f"  Loading {len(sample)} audio files...")
+        audio_data: dict[str, np.ndarray] = {}
+        for flac_path, _text in sample:
+            audio_data[flac_path] = _load_audio(flac_path)
 
         # Load model
         t0 = time.perf_counter()
@@ -148,11 +193,12 @@ def run_benchmark() -> None:
         wers = []
         latencies = []
 
-        for fname, ground_truth in entries:
-            if fname not in audio_data:
+        for flac_path, ground_truth in sample:
+            if flac_path not in audio_data:
                 continue
 
-            audio = audio_data[fname]
+            audio = audio_data[flac_path]
+            uttid = os.path.splitext(os.path.basename(flac_path))[0]
 
             # Transcribe
             t0 = time.perf_counter()
@@ -172,14 +218,14 @@ def run_benchmark() -> None:
 
             all_rows.append({
                 "model": model_size,
-                "clip": fname,
+                "clip": uttid,
                 "ground_truth": ground_truth,
                 "hypothesis": hypothesis,
                 "wer": f"{wer:.4f}",
                 "latency_s": f"{latency:.4f}",
             })
 
-            print(f"  {fname}: WER={wer:.2%}  latency={latency:.3f}s")
+            print(f"  {uttid}: WER={wer:.2%}  latency={latency:.3f}s")
             print(f"    REF: {ground_truth}")
             print(f"    HYP: {hypothesis}")
 
@@ -190,39 +236,40 @@ def run_benchmark() -> None:
 
         summary_rows.append({
             "model": model_size,
+            "num_clips": len(wers),
+            "random_seed": seed,
             "avg_wer": f"{avg_wer:.4f}",
             "avg_latency_s": f"{avg_lat:.4f}",
             "std_latency_s": f"{std_lat:.4f}",
-            "num_clips": len(wers),
         })
 
         print(f"\n  ── Summary for {model_size} ──")
         print(f"  Average WER:     {avg_wer:.2%}")
-        print(f"  Average latency: {avg_lat:.3f}s ± {std_lat:.3f}s")
+        print(f"  Average latency: {avg_lat:.3f}s \u00b1 {std_lat:.3f}s")
         print()
 
-        # Release model memory
+        # Release model memory and audio cache
         del model
+        del audio_data
 
-    # ── Write CSV ────────────────────────────────────────────────────────────
-    with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "model", "clip", "ground_truth", "hypothesis", "wer", "latency_s",
-        ])
-        writer.writeheader()
-        writer.writerows(all_rows)
-
-    print(f"\n✓ Detailed results saved to {RESULTS_CSV}")
+    # ── Write CSV (metadata in .meta.json sidecar) ──────────────────────────────────────
+    system_meta.write_csv(
+        RESULTS_CSV,
+        fieldnames=["model", "clip", "ground_truth", "hypothesis", "wer", "latency_s"],
+        rows=all_rows,
+        meta=meta,
+    )
+    print(f"✓ Detailed results saved to {RESULTS_CSV}")
+    print(f"  (metadata sidecar: {RESULTS_CSV.replace('.csv', '.meta.json')})")
 
     # Summary CSV
     summary_csv = os.path.join(RESULTS_DIR, "asr_summary.csv")
-    with open(summary_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "model", "avg_wer", "avg_latency_s", "std_latency_s", "num_clips",
-        ])
-        writer.writeheader()
-        writer.writerows(summary_rows)
-
+    system_meta.write_csv(
+        summary_csv,
+        fieldnames=["model", "num_clips", "random_seed", "avg_wer", "avg_latency_s", "std_latency_s"],
+        rows=summary_rows,
+        meta=meta,
+    )
     print(f"✓ Summary saved to {summary_csv}")
 
     # Print paper-ready table

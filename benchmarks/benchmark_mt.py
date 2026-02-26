@@ -27,7 +27,7 @@ import config  # noqa: E402
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
 SENTENCES_FILE = os.path.join(PROJECT_ROOT, "test_sentences", "sentences.txt")
-RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "mt")
 RESULTS_CSV = os.path.join(RESULTS_DIR, "mt_results.csv")
 
 

@@ -13,11 +13,10 @@ What it downloads
    Installed to:  ~/.local/share/argos-translate/packages/  (Linux)
                   %LOCALAPPDATA%\\argos-translate\\packages\\  (Windows)
 
-3. AI4Bharat IndicF5 TTS model — ~400 MB (float32)
-   Cached to:  ~/.cache/huggingface/hub/models--ai4bharat--IndicF5/
-   Hindi reference audio prompt saved to:  prompts/HIN_F_HAPPY_00001.wav
+3. Facebook MMS-TTS Hindi model — ~150 MB
+   Cached to:  ~/.cache/huggingface/hub/models--facebook--mms-tts-hin/
 
-Total:  ~650-750 MB depending on cached HuggingFace files.
+Total:  ~400-500 MB depending on cached HuggingFace files.
 
 Usage
 -----
@@ -144,64 +143,24 @@ def verify_translation_model() -> None:
     _ok(f"Translation smoke test passed: \"Hello\" → \"{result.strip()}\"")
 
 
-# ── Step 3: AI4Bharat IndicF5 TTS ───────────────────────────────────────────
+# ── Step 3: Facebook MMS-TTS ─────────────────────────────────────────────────
 
 def download_tts_model() -> None:
-    """Download IndicF5 model weights and a Hindi reference audio prompt."""
-    print("\n[3/3] Downloading AI4Bharat IndicF5 TTS model…")
-    _info(f"Model: {config.INDICF5_MODEL_ID}  device: {config.INDICF5_DEVICE}")
+    """Download MMS-TTS model weights to the HuggingFace cache."""
+    print("\n[3/3] Downloading Facebook MMS-TTS model…")
+    _info(f"Model: {config.MMS_TTS_MODEL_ID}  device: {config.MMS_TTS_DEVICE}")
 
-    from huggingface_hub import snapshot_download  # noqa: PLC0415
+    from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
-    # Pre-download all model files to cache WITHOUT instantiating the model.
-    # Instantiation (which loads the vocoder) happens later in TTSThread
-    # where it doesn't conflict with transformers' meta-tensor initialization.
     t0 = time.perf_counter()
-    _cache_dir = snapshot_download(config.INDICF5_MODEL_ID)
+    # Pre-download + verify by loading tokenizer and model weights.
+    # The model is not moved to the target device here — that happens
+    # lazily in TTSEngine.run() on the dedicated TTS thread.
+    _tokenizer = VitsTokenizer.from_pretrained(config.MMS_TTS_MODEL_ID)
+    _model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
     elapsed = time.perf_counter() - t0
-    _ok(f"IndicF5 model files downloaded to cache in {elapsed:.1f}s")
-
-    # ── Download Hindi reference audio prompt ─────────────────────────────
-    from pathlib import Path as _Path  # noqa: PLC0415
-    from huggingface_hub import hf_hub_download  # noqa: PLC0415
-
-    ref_dest = _Path(config.INDICF5_REF_AUDIO_PATH)
-    if ref_dest.exists():
-        _ok(f"Hindi reference audio already present: {ref_dest}")
-        return
-
-    ref_dest.parent.mkdir(parents=True, exist_ok=True)
-    ref_filename = ref_dest.name  # e.g. HIN_F_HAPPY_00001.wav
-
-    _info(f"Downloading reference audio '{ref_filename}' from {config.INDICF5_MODEL_ID}…")
-    
-    try:
-        downloaded = hf_hub_download(
-            repo_id=config.INDICF5_MODEL_ID,
-            filename=f"prompts/{ref_filename}",
-        )
-        import shutil  # noqa: PLC0415
-        shutil.copy2(downloaded, ref_dest)
-        _ok(f"Hindi reference audio saved → {ref_dest}")
-
-    except Exception as exc:  # pylint: disable=broad-except
-        # Fallback: try the Punjabi prompt that ships in the README example
-        _info(f"'{ref_filename}' not found ({exc}); attempting Punjabi fallback…")
-        try:
-            fallback_file = "PAN_F_HAPPY_00001.wav"
-            downloaded = hf_hub_download(
-                repo_id=config.INDICF5_MODEL_ID,
-                filename=f"prompts/{fallback_file}",
-            )
-            import shutil  # noqa: PLC0415
-            shutil.copy2(downloaded, ref_dest)
-            _ok(f"Fallback Punjabi reference audio saved → {ref_dest}")
-        except Exception as exc2:  # pylint: disable=broad-except
-            _fail(
-                f"Could not download any reference audio: {exc2}\n"
-                "   Please manually place a short (~10s) Hindi WAV file at "
-                f"{ref_dest} and re-run."
-            )
+    del _tokenizer, _model  # free memory — just needed for cache warm-up
+    _ok(f"MMS-TTS model downloaded/verified in {elapsed:.1f}s")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

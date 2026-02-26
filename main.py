@@ -61,7 +61,7 @@ def main() -> None:
     # Suppress faster-whisper's verbose "Processing audio with duration" messages
     logging.getLogger("faster_whisper").setLevel(logging.WARNING)
 
-    device = config.INDICF5_DEVICE
+    device = config.MMS_TTS_DEVICE
     if device == "auto":
         try:
             import torch  # noqa: PLC0415
@@ -71,11 +71,13 @@ def main() -> None:
 
     print("=" * 60)
     print(" PolyglotTalk v0.1 — Offline Speech-to-Speech Translation")
-    print(f" {args.source.upper()} → {args.target.upper()}  |  TTS: IndicF5 ({device})  |  No cloud APIs")
+    print(f" {args.source.upper()} → {args.target.upper()}  |  TTS: MMS-TTS ({device})  |  No cloud APIs")
     print(f" TTS output saved to: {config.TTS_OUTPUT_DIR}/chunk_NNNN.wav")
     print("=" * 60)
 
-    # ── Clean up old output chunks ──────────────────────────────────────
+    # ── Clean up old output chunks (only in root output dir, not subdirs) ──
+    # Note: glob("chunk_*.wav") only matches files directly in output_dir,
+    # not in subdirectories like e2e_benchmark/
     output_dir = Path(config.TTS_OUTPUT_DIR)
     if output_dir.exists():
         for wav_file in output_dir.glob("chunk_*.wav"):

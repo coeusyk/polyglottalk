@@ -19,10 +19,14 @@ Output
     results/context_results.csv
 """
 
+# SCOPE NOTE: This benchmark measures translation-layer repetition only.
+# Inputs are clean, non-overlapping sentences fed directly to the Translator.
+# ASR-layer overlap deduplication (handled by ASREngine.deduplicate_overlap) is
+# out of scope here and is tested separately via the live pipeline in main.py.
+
 from __future__ import annotations
 
 import collections
-import csv
 import difflib
 import os
 import sys
@@ -36,27 +40,46 @@ import config  # noqa: E402
 import argostranslate.package  # noqa: E402
 import argostranslate.translate  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(__file__))
+import system_meta  # noqa: E402
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
-CONVERSATION_SCRIPT = os.path.join(
-    PROJECT_ROOT, "test_clips", "conversation_script.txt"
-)
-RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-clean")
+# Number of consecutive sentences drawn from one chapter for context testing
+CONTEXT_CLIP_COUNT: int = 10
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "context")
 RESULTS_CSV = os.path.join(RESULTS_DIR, "context_results.csv")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _load_conversation() -> list[str]:
-    """Load conversation sentences from script file."""
-    sentences = []
-    with open(CONVERSATION_SCRIPT, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            sentences.append(line)
-    return sentences
+    """Load CONTEXT_CLIP_COUNT consecutive sentences from the first LibriSpeech chapter.
+
+    Sentences are drawn from the first ``*.trans.txt`` file found under
+    LIBRISPEECH_DIR (sorted).  ALL-CAPS LibriSpeech text is title-cased for
+    more natural English input to the translator.
+    """
+    import pathlib
+
+    for trans_file in sorted(pathlib.Path(LIBRISPEECH_DIR).rglob("*.trans.txt")):
+        sentences: list[str] = []
+        with open(trans_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                _uttid, text = line.split(" ", 1)
+                sentences.append(text.title())
+                if len(sentences) >= CONTEXT_CLIP_COUNT:
+                    break
+        if sentences:
+            return sentences
+
+    raise FileNotFoundError(
+        f"No *.trans.txt files found under {LIBRISPEECH_DIR}"
+    )
 
 
 def _translate(text: str) -> str:
@@ -75,6 +98,7 @@ def _word_overlap(a: str, b: str) -> float:
 
 def _is_repetition(prev_output: str, curr_output: str) -> bool:
     """Check if current output is too similar to previous (>60% word overlap)."""
+    # Translation-layer repetition only. ASR overlap dedup is upstream in asr_engine.py.
     return _word_overlap(prev_output, curr_output) > 0.60
 
 
@@ -153,6 +177,12 @@ def run_benchmark() -> None:
     sentences = _load_conversation()
     print(f"Loaded {len(sentences)} conversation sentences.\n")
 
+    # Collect system / config snapshot
+    meta = system_meta.collect()
+    meta["dataset"] = "LibriSpeech dev-clean (first chapter)"
+    meta["num_sentences"] = str(len(sentences))
+    meta["context_maxlen"] = str(config.CONTEXT_MAXLEN)
+
     # Verify Argos model
     installed = argostranslate.package.get_installed_packages()
     if not any(p.from_code == "en" and p.to_code == "hi" for p in installed):
@@ -230,55 +260,51 @@ def run_benchmark() -> None:
 
     # Write per-sentence detail CSV
     detail_csv = os.path.join(RESULTS_DIR, "context_detail.csv")
-    with open(detail_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
+    detail_rows = []
+    for i in range(len(sentences)):
+        is_rep_with = _is_repetition(outputs_with[i-1], outputs_with[i]) if i > 0 else False
+        is_rep_without = _is_repetition(outputs_without[i-1], outputs_without[i]) if i > 0 else False
+        detail_rows.append({
+            "sentence_id": i + 1,
+            "source": sentences[i],
+            "output_with_context": outputs_with[i],
+            "output_without_context": outputs_without[i],
+            "latency_with_s": f"{latencies_with[i]:.4f}",
+            "latency_without_s": f"{latencies_without[i]:.4f}",
+            "translation_repetition_with": is_rep_with,
+            "translation_repetition_without": is_rep_without,
+            "is_grammar_break_with": _is_grammar_break(sentences[i], outputs_with[i]),
+            "is_grammar_break_without": _is_grammar_break(sentences[i], outputs_without[i]),
+        })
+    system_meta.write_csv(
+        detail_csv,
+        fieldnames=[
             "sentence_id", "source", "output_with_context", "output_without_context",
             "latency_with_s", "latency_without_s",
-            "is_repetition_with", "is_repetition_without",
+            "translation_repetition_with", "translation_repetition_without",
             "is_grammar_break_with", "is_grammar_break_without",
-        ])
-        writer.writeheader()
-        for i in range(len(sentences)):
-            is_rep_with = _is_repetition(outputs_with[i-1], outputs_with[i]) if i > 0 else False
-            is_rep_without = _is_repetition(outputs_without[i-1], outputs_without[i]) if i > 0 else False
-            writer.writerow({
-                "sentence_id": i + 1,
-                "source": sentences[i],
-                "output_with_context": outputs_with[i],
-                "output_without_context": outputs_without[i],
-                "latency_with_s": f"{latencies_with[i]:.4f}",
-                "latency_without_s": f"{latencies_without[i]:.4f}",
-                "is_repetition_with": is_rep_with,
-                "is_repetition_without": is_rep_without,
-                "is_grammar_break_with": _is_grammar_break(sentences[i], outputs_with[i]),
-                "is_grammar_break_without": _is_grammar_break(sentences[i], outputs_without[i]),
-            })
-
+        ],
+        rows=detail_rows,
+        meta=meta,
+    )
     print(f"\n✓ Detail saved to {detail_csv}")
+    print(f"  (metadata sidecar: {detail_csv.replace('.csv', '.meta.json')})")
 
     # Write summary CSV
-    with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "metric", "with_context", "without_context",
-        ])
-        writer.writeheader()
-        writer.writerow({
-            "metric": "repetitions",
-            "with_context": reps_with,
-            "without_context": reps_without,
-        })
-        writer.writerow({
-            "metric": "grammar_breaks",
-            "with_context": breaks_with,
-            "without_context": breaks_without,
-        })
-        writer.writerow({
-            "metric": "avg_latency_s",
-            "with_context": results["avg_latency_with_context"],
-            "without_context": results["avg_latency_without_context"],
-        })
-
+    summary_rows = [
+        {"metric": "repetitions",    "with_context": reps_with,   "without_context": reps_without},
+        {"metric": "grammar_breaks", "with_context": breaks_with, "without_context": breaks_without},
+        {"metric": "avg_latency_s",  "with_context": results["avg_latency_with_context"],
+                                      "without_context": results["avg_latency_without_context"]},
+    ]
+    system_meta.write_csv(
+        RESULTS_CSV,
+        fieldnames=["metric", "with_context", "without_context"],
+        rows=summary_rows,
+        meta=meta,
+    )
     print(f"✓ Summary saved to {RESULTS_CSV}")
+    print(f"  (metadata sidecar: {RESULTS_CSV.replace('.csv', '.meta.json')})")
 
     # Print paper-ready table
     print(f"\n{'=' * 60}")
@@ -286,7 +312,7 @@ def run_benchmark() -> None:
     print(f"{'=' * 60}")
     print(f"  {'Metric':<25} {'With Context':>15} {'Without Context':>18}")
     print(f"  {'─' * 25} {'─' * 15} {'─' * 18}")
-    print(f"  {'Repetitions':<25} {reps_with:>15} {reps_without:>18}")
+    print(f"  {'Translation Repetitions':<25} {reps_with:>15} {reps_without:>18}")
     print(f"  {'Grammar Breaks':<25} {breaks_with:>15} {breaks_without:>18}")
     print(f"  {'Avg Latency (s)':<25} {results['avg_latency_with_context']:>15} {results['avg_latency_without_context']:>18}")
 

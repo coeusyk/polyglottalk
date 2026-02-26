@@ -167,7 +167,22 @@ class ASREngine:
                     text,
                 )
                 continue
-
+            # ── Near-duplicate guard ──────────────────────────────────────
+            # Catches Whisper re-transcribing the overlapping region with
+            # slightly different wording (capitalisation / punctuation) so
+            # the exact-dup check above didn't catch it.
+            if self._last_text:
+                _curr_set = set(w.lower() for w in text.split())
+                _prev_set = set(w.lower() for w in self._last_text.split())
+                _overlap_count = len(_curr_set & _prev_set)
+                _min_len = min(len(text.split()), len(self._last_text.split()))
+                if _min_len > 0 and _overlap_count / _min_len > 0.85:
+                    logger.debug(
+                        "Chunk %d near-duplicate of previous (%.0f%%), skipping.",
+                        item.chunk_id,
+                        _overlap_count / _min_len * 100,
+                    )
+                    continue
             self._last_text = text
 
             # ── Overlap deduplication ──────────────────────────────────────
@@ -222,6 +237,26 @@ class ASREngine:
     # ── Overlap deduplication ───────────────────────────────────────────────
 
     @staticmethod
+    def _normalize_token(w: str) -> str:
+        """Normalise a single token for overlap comparison.
+
+        Lowercases *w* and strips every character that is not a word
+        character or an apostrophe, so contractions like ``don't`` survive
+        while punctuation attached to a word (``fox,``, ``(Brown)``) is
+        removed before comparison.
+
+        Examples
+        --------
+        >>> ASREngine._normalize_token("Fox,")
+        'fox'
+        >>> ASREngine._normalize_token("don't")
+        "don't"
+        >>> ASREngine._normalize_token("(hello)")
+        'hello'
+        """
+        return re.sub(r"[^\w']", "", w.lower())
+
+    @staticmethod
     def _expand_to_tokens(
         words: list[str],
     ) -> tuple[list[str], list[int]]:
@@ -258,13 +293,19 @@ class ASREngine:
     ) -> list[str]:
         """Remove overlapping words at the boundary between chunks.
 
-        Expands hyphenated words into component tokens before comparison so
-        Whisper's inconsistent hyphenation (e.g. "real time" in one chunk vs
-        "real-time" in the next) is handled correctly.
+        Expands hyphenated words into component tokens (via
+        :meth:`_expand_to_tokens`) and then applies
+        :meth:`_normalize_token` to every sub-token before comparison.
+        This makes matching robust against Whisper's inconsistent
+        punctuation and capitalisation across consecutive overlapping
+        chunks (e.g. ``"fox"`` vs ``"fox,"``, ``"Brown"`` vs
+        ``"brown"``, or mid-word punctuation that the simple
+        ``strip()`` in ``_expand_to_tokens`` would miss).
 
-        Finds the longest suffix of *prev* tokens that equals a prefix of
-        *curr* tokens (case-insensitive), then maps the match back to the
-        original *curr_words* index to return only the new content.
+        Finds the longest suffix of *prev* normalised tokens that equals
+        a prefix of *curr* normalised tokens, then maps the match back to
+        the original *curr_words* index so the returned list preserves the
+        original Whisper capitalisation and punctuation.
 
         Example
         -------
@@ -277,14 +318,19 @@ class ASREngine:
         if not prev_words or not curr_words:
             return curr_words
 
-        prev_tokens, _ = ASREngine._expand_to_tokens(prev_words)
-        curr_tokens, curr_orig = ASREngine._expand_to_tokens(curr_words)
+        # Expand to sub-tokens (handles hyphen splitting) then normalise
+        # each token for a punctuation- and case-insensitive comparison.
+        prev_raw, _ = ASREngine._expand_to_tokens(prev_words)
+        curr_raw, curr_orig = ASREngine._expand_to_tokens(curr_words)
 
-        max_overlap = min(len(prev_tokens), len(curr_tokens))
+        prev_norm = [ASREngine._normalize_token(t) for t in prev_raw]
+        curr_norm = [ASREngine._normalize_token(t) for t in curr_raw]
+
+        max_overlap = min(len(prev_norm), len(curr_norm))
         best = 0
 
         for k in range(1, max_overlap + 1):
-            if prev_tokens[-k:] == curr_tokens[:k]:
+            if prev_norm[-k:] == curr_norm[:k]:
                 best = k
 
         if best == 0:
