@@ -156,7 +156,8 @@ def run_benchmark() -> None:
         def _tts_worker():
             try:
                 engine = pyttsx3.init()
-                engine.setProperty("rate", config.TTS_RATE)
+                # Use an explicit TTS speaking rate for pyttsx3 (approx. default).
+                engine.setProperty("rate", 180)
                 t_tts_start = time.perf_counter()
                 engine.say(translated)
                 engine.runAndWait()
