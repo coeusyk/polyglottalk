@@ -251,11 +251,11 @@ Key values in [config.py](config.py):
 
 ```bash
 wget https://openslr.trmal.net/resources/12/dev-clean.tar.gz
-tar -xzf dev-clean.tar.gz
+mkdir -p data && tar -xzf dev-clean.tar.gz -C data
 rm dev-clean.tar.gz
 ```
 
-This extracts to `dev-clean/LibriSpeech/dev-clean/` relative to the project root, which is where the benchmarks and tests expect it.
+This extracts to `data/dev-clean/LibriSpeech/dev-clean/` relative to the project root, which is where the benchmarks and tests expect it.
 
 ---
 

@@ -15,7 +15,7 @@ CT2_INTER_THREADS are set in os.environ before any CTranslate2 library
 from __future__ import annotations
 
 # ── config MUST be the first project import ──────────────────────────────────
-import config  # noqa: F401 — sets os.environ before CT2 is imported
+from polyglot_talk import config  # noqa: F401 — sets os.environ before CT2 is imported
 
 import argparse
 import logging
@@ -87,7 +87,7 @@ def main() -> None:
     # ── Import pipeline here so CT2 env vars are already set ─────────────
     # (pipeline imports asr_engine / translator which import faster_whisper /
     #  argostranslate — those must see OMP_NUM_THREADS from config.py)
-    from pipeline import Pipeline  # noqa: PLC0415
+    from polyglot_talk.pipeline import Pipeline  # noqa: PLC0415
 
     pipeline = Pipeline(source_lang=args.source, target_lang=args.target)
 

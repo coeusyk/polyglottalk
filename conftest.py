@@ -18,4 +18,4 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 # Set CTranslate2 thread limits before any test imports CT2 libs
-import config  # noqa: F401, E402
+from polyglot_talk import config  # noqa: F401, E402

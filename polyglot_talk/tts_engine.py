@@ -27,8 +27,8 @@ from typing import Any, Optional
 import numpy as np
 import soundfile as sf
 
-import config
-from models import TranslatedSegment  # noqa: F401 — for type hints in tests
+from . import config
+from .models import TranslatedSegment  # noqa: F401 — for type hints in tests
 
 logger = logging.getLogger(__name__)
 

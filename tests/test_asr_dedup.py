@@ -15,9 +15,9 @@ import numpy as np
 
 # Patch WhisperModel before importing ASREngine so the model is never loaded.
 with patch("faster_whisper.WhisperModel", MagicMock()):
-    from asr_engine import ASREngine
+    from polyglot_talk.asr_engine import ASREngine
 
-from models import AudioChunk
+from polyglot_talk.models import AudioChunk
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

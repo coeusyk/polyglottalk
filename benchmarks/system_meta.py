@@ -75,7 +75,7 @@ def collect() -> dict[str, str]:
     try:
         import sys as _sys
         _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        import config  # noqa: PLC0415
+        from polyglot_talk import config  # noqa: PLC0415
 
         meta["config_asr_model_size"] = config.ASR_MODEL_SIZE
         meta["config_asr_compute_type"] = config.ASR_COMPUTE_TYPE
