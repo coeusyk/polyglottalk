@@ -186,9 +186,7 @@ def main() -> None:
     if not args.skip_verify:
         verify_translation_model()
 
-    # Pass the already-loaded ASR model so download_tts_model can transcribe
-    # the reference audio without loading a second Whisper instance.
-    download_tts_model(asr_model=asr_model)
+    download_tts_model()
 
     print("\n" + "=" * 60)
     print(" ✓ All models ready for offline use.")
