@@ -245,6 +245,18 @@ Key values in [config.py](config.py):
 | `test_context.py` | Nothing | Fully mocked — runs anywhere |
 | `test_pipeline_e2e.py` | Models installed | Uses synthetic audio, no mic needed |
 
+### Dataset Setup (ASR tests and benchmarks)
+
+`test_asr.py` and the ASR benchmarks require the [LibriSpeech](https://www.openslr.org/12) `dev-clean` dataset (~350 MB). Download and extract it into the project root:
+
+```bash
+wget https://openslr.trmal.net/resources/12/dev-clean.tar.gz
+tar -xzf dev-clean.tar.gz
+rm dev-clean.tar.gz
+```
+
+This extracts to `dev-clean/LibriSpeech/dev-clean/` relative to the project root, which is where the benchmarks and tests expect it.
+
 ---
 
 ## Dependencies
