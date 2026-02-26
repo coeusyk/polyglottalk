@@ -1,20 +1,18 @@
 """
-tts_engine.py — Text-to-speech thread using AI4Bharat IndicF5.
+tts_engine.py — Text-to-speech thread using Facebook MMS-TTS (VITS-based).
 
-  Each translated segment is synthesised with IndicF5 (a high-quality
-  zero-shot TTS model for Indian languages) and saved as a WAV file under
-  config.TTS_OUTPUT_DIR (default: output/).
+  Each translated segment is synthesised with MMS-TTS (a non-autoregressive
+  VITS model with constant latency regardless of text length) and saved as
+  a WAV file under config.TTS_OUTPUT_DIR (default: output/).
 
   Files are named:  output/chunk_<id>.wav
-  Sample rate:      24 000 Hz (IndicF5 native output)
+  Sample rate:      model.config.sampling_rate (typically 16 000 Hz)
 
-  The IndicF5 model is loaded lazily inside run() on the dedicated TTSThread.
-  All subsequent synthesis calls reuse the loaded model.
+  The MMS-TTS model and tokenizer are loaded lazily inside run() on the
+  dedicated TTSThread.  All subsequent synthesis calls reuse the loaded model.
 
-  Voice prosody is cloned from a short reference audio clip
-  (config.INDICF5_REF_AUDIO_PATH).  If config.INDICF5_REF_TEXT is left empty,
-  IndicF5 auto-transcribes the reference audio with Whisper on first use;
-  the result is internally cached so later calls are fast.
+  No reference audio or reference text is required — MMS-TTS is a fixed-voice
+  model; the target language is encoded in config.MMS_TTS_MODEL_ID.
 """
 
 from __future__ import annotations
@@ -30,24 +28,21 @@ import numpy as np
 import soundfile as sf
 
 import config
-from models import AudioChunk, TranslatedSegment  # noqa: F401 — for type hints in tests
+from models import TranslatedSegment  # noqa: F401 — for type hints in tests
 
 logger = logging.getLogger(__name__)
 
 
 class TTSEngine:
-    """Synthesises TranslatedSegment text via IndicF5 and saves to WAV files.
+    """Synthesises TranslatedSegment text via MMS-TTS and saves to WAV files.
 
     Each translated chunk is saved as output/chunk_<id>.wav rather than
     played through speakers, preventing microphone feedback during live
     translation sessions.
 
-    The IndicF5 AutoModel is loaded inside run() (on the TTSThread) to keep
-    __init__ cheap so the Pipeline constructor stays fast.
+    The VitsModel and VitsTokenizer are loaded inside run() (on the TTSThread)
+    to keep __init__ cheap so the Pipeline constructor stays fast.
     """
-
-    #: Native IndicF5 output sample rate (Hz)
-    _SAMPLERATE: int = 24_000
 
     def __init__(
         self,
@@ -60,10 +55,11 @@ class TTSEngine:
         self._output_dir = Path(output_dir)
 
         # Resolve device at construction time (no torch import yet)
-        self._device: str = config.INDICF5_DEVICE
+        self._device: str = config.MMS_TTS_DEVICE
 
-        # Model loaded in run() — do NOT load here
+        # Model and tokenizer loaded in run() — do NOT load here
         self._model: Optional[Any] = None
+        self._tokenizer: Optional[Any] = None
 
         # Set by run() once the model is loaded and ref_text is resolved.
         # Pipeline.start() waits on this before opening the microphone so
@@ -73,74 +69,31 @@ class TTSEngine:
     # ── Thread target ──────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Load IndicF5, then synthesise translated segments into WAV files."""
+        """Load MMS-TTS, then synthesise translated segments into WAV files."""
         # ── Resolve "auto" device ──────────────────────────────────────────
-        import torch  # noqa: PLC0415  — imported once here for device check and model load
+        import torch  # noqa: PLC0415
         if self._device == "auto":
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
         logger.info(
-            "Loading IndicF5 model '%s' on device=%s…",
-            config.INDICF5_MODEL_ID,
+            "Loading MMS-TTS model '%s' on device=%s…",
+            config.MMS_TTS_MODEL_ID,
             self._device,
         )
 
-        from transformers.models.auto.modeling_auto import AutoModel  # noqa: PLC0415
+        from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
-        # NOTE: transformers>=5.0 removed `low_cpu_mem_usage` and now forces
-        # meta-device init by default, which breaks Vocos/MelSpectrogram whose
-        # __init__ calls .item() on tensors before weights are materialised.
-        # Requires transformers<5.0 (pinned in requirements.txt).
-        self._model = AutoModel.from_pretrained(
-            config.INDICF5_MODEL_ID,
-            trust_remote_code=True,
-            low_cpu_mem_usage=False,
-        )
-
-        # Move to GPU if requested
-        if self._device == "cuda":
-            try:
-                assert self._model is not None
-                self._model = self._model.to(torch.device("cuda"))
-            except Exception:
-                logger.warning("Failed to move IndicF5 to CUDA — falling back to CPU.")
-                self._device = "cpu"
+        self._tokenizer = VitsTokenizer.from_pretrained(config.MMS_TTS_MODEL_ID)
+        self._model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
+        self._model = self._model.to(torch.device(self._device))
+        self._model.eval() # type: ignore
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
-        ref_audio = str(config.INDICF5_REF_AUDIO_PATH)
-        ref_text = config.INDICF5_REF_TEXT
-
-        # Validate reference audio exists
-        if not Path(ref_audio).exists():
-            logger.warning(
-                "IndicF5 reference audio not found at '%s'. "
-                "Run 'python setup_models.py' to download it.",
-                ref_audio,
-            )
-
-        # Load ref_text from sidecar .txt file when config leaves it empty.
-        # setup_models.py writes this file by transcribing the reference audio
-        # with faster-whisper so the expensive Whisper pass never happens at
-        # synthesis time.
-        if not ref_text:
-            sidecar = Path(ref_audio).with_suffix(".txt")
-            if sidecar.exists():
-                ref_text = sidecar.read_text(encoding="utf-8").strip()
-                logger.info("Loaded ref_text from sidecar '%s': %s", sidecar, ref_text)
-            else:
-                logger.warning(
-                    "INDICF5_REF_TEXT is empty and no sidecar '%s' found. "
-                    "IndicF5 will auto-transcribe the reference audio on the first "
-                    "synthesis call (adds ~20-30 s). Run 'python setup_models.py' "
-                    "to pre-generate the sidecar and avoid this delay.",
-                    sidecar,
-                )
-
         logger.info(
-            "TTS engine ready (IndicF5, device=%s, ref_audio=%s)",
+            "TTS engine ready (MMS-TTS, device=%s, model=%s)",
             self._device,
-            ref_audio,
+            config.MMS_TTS_MODEL_ID,
         )
         # Signal Pipeline.start() that TTS is ready to synthesise
         self._model_ready.set()
@@ -159,7 +112,7 @@ class TTSEngine:
             out_path = self._output_dir / f"chunk_{item.chunk_id:04d}.wav"
 
             t0 = time.perf_counter()
-            success = self._synthesise(item.text, out_path, ref_audio, ref_text)
+            success = self._synthesise(item.text, out_path)
             elapsed = time.perf_counter() - t0
 
             # End-to-end latency measured from audio capture to file write
@@ -184,35 +137,34 @@ class TTSEngine:
         self,
         text: str,
         path: Path,
-        ref_audio: str,
-        ref_text: str,
     ) -> bool:
-        """Synthesise ``text`` via IndicF5 and write a WAV file to ``path``.
+        """Synthesise ``text`` via MMS-TTS and write a WAV file to ``path``.
 
         Args:
-            text:      Hindi (or target-language) text to synthesise.
-            path:      Destination WAV file path.
-            ref_audio: Path to the reference audio clip.
-            ref_text:  Transcript of the reference clip (empty → auto-transcribe).
+            text: Hindi (or target-language) text to synthesise.
+            path: Destination WAV file path.
         """
-        if self._model is None:
+        if self._model is None or self._tokenizer is None:
             logger.warning("TTS model not loaded — skipping synthesis for %s.", path.name)
             return False
 
         try:
-            audio = self._model(
-                text,
-                ref_audio_path=ref_audio,
-                ref_text=ref_text,
+            import torch  # noqa: PLC0415
+
+            inputs = self._tokenizer(text, return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                output = self._model(**inputs)
+
+            waveform = output.waveform[0].squeeze().cpu().numpy()
+            sf.write(
+                str(path),
+                waveform.astype(np.float32),
+                samplerate=self._model.config.sampling_rate,
             )
-
-            # IndicF5 may return int16; normalise to float32 in [-1, 1]
-            if isinstance(audio, np.ndarray) and audio.dtype == np.int16:
-                audio = audio.astype(np.float32) / 32_768.0
-
-            sf.write(str(path), np.array(audio, dtype=np.float32), samplerate=self._SAMPLERATE)
             return True
 
         except Exception:
-            logger.exception("IndicF5 synthesis failed for chunk '%s'.", path.name)
+            logger.exception("MMS-TTS synthesis failed for chunk '%s'.", path.name)
             return False

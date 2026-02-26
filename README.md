@@ -1,10 +1,10 @@
 # PolyglotTalk
 
 Real-time, fully **offline** Speech-to-Speech Translation (S2ST) — no cloud APIs, no data leaves your machine.
-ASR and translation run on **CPU**; TTS (IndicF5) automatically uses **CUDA** if a GPU is present, falling back to CPU.
+ASR and translation run on **CPU**; TTS (MMS-TTS) automatically uses **CUDA** if a GPU is present, falling back to CPU.
 
 ```
-Microphone → [Whisper ASR] → [Argos Translate] → [IndicF5 TTS] → WAV Files
+Microphone → [Whisper ASR] → [Argos Translate] → [MMS-TTS] → WAV Files
 ```
 
 Speak English into your microphone; translated speech is synthesised and saved to `output/chunk_*.wav` files (preventing mic feedback). Each stage runs in its own thread so recording, transcribing, translating, and synthesis all happen **simultaneously**.
@@ -14,7 +14,7 @@ Speak English into your microphone; translated speech is synthesised and saved t
 ## Features
 
 - **Fully offline** — all models run locally after a one-time download
-- **CPU + optional CUDA** — ASR and translation always run on CPU; TTS (IndicF5) auto-detects CUDA and uses it if available, otherwise falls back to CPU
+- **CPU + optional CUDA** — ASR and translation always run on CPU; TTS (MMS-TTS) auto-detects CUDA and uses it if available, otherwise falls back to CPU
 - **Overlapping audio chunks** — consecutive 2.5 s windows share 1.0 s of audio so words at chunk boundaries are never cut off
 - **Sentence buffering** — ASR fragments accumulate into natural sentences before translation, giving the MT model better context
 - **Hyphen-aware deduplication** — overlap text is removed at word boundaries even when Whisper transcribes the same words differently across chunks (e.g. "real time" vs "real-time")
@@ -32,7 +32,7 @@ Speak English into your microphone; translated speech is synthesised and saved t
 ```
 ============================================================
  PolyglotTalk v0.1 — Offline Speech-to-Speech Translation
- EN → HI  |  TTS: IndicF5 (cuda)  |  No cloud APIs
+ EN → HI  |  TTS: MMS-TTS (cuda)  |  No cloud APIs
  TTS output saved to: output/chunk_NNNN.wav
 ============================================================
 ✓ Pipeline ready. Speak now… (Ctrl+C to stop)
@@ -57,7 +57,7 @@ Pipeline stopped.
 ### System packages (Linux / WSL2)
 
 ```bash
-sudo apt-get install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-utils
+sudo apt-get install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-utils ffmpeg
 ```
 
 | Package | Purpose |
@@ -66,21 +66,9 @@ sudo apt-get install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-
 | `pulseaudio` / `libpulse0` | Audio routing (WSL2: connects to WSLg's RDP microphone) |
 | `alsa-utils` | ALSA audio utilities — needed for audio device enumeration |
 
-### HuggingFace CLI (for accessing gated models)
+### HuggingFace CLI
 
-IndicF5 is a **gated repository** requiring authentication. Install the HF CLI and log in:
-
-```bash
-# Install HuggingFace CLI
-curl -LsSf https://hf.co/cli/install.sh | bash
-
-# Log in (creates ~/.cache/huggingface/token)
-hf auth login
-```
-
-When prompted, paste your [HuggingFace API token](https://huggingface.co/settings/tokens).
-
-**Before running `setup_models.py`:** Visit https://huggingface.co/ai4bharat/IndicF5 and click "Access repository" to accept the model's terms.
+MMS-TTS (`facebook/mms-tts-hin`) is a public, ungated repository — no authentication required.
 
 > **WSL2 users:** Audio is bridged via WSLg on Windows 11. After installing
 > `libpulse0`, verify your mic appears with:
@@ -91,9 +79,11 @@ When prompted, paste your [HuggingFace API token](https://huggingface.co/setting
 
 > **TTS output files:** Synthesised speech is saved to `output/chunk_NNNN.wav`
 > files (where N is the chunk ID). This avoids microphone feedback during
-> live translation and uses IndicF5, a high-quality neural TTS model for
-> Indian languages. IndicF5 automatically runs on **CUDA** when a compatible
-> GPU is detected (`INDICF5_DEVICE = "auto"`), falling back to CPU otherwise.
+> live translation and uses MMS-TTS (facebook/mms-tts-hin), a fast
+> non-autoregressive VITS-based model. MMS-TTS automatically runs on **CUDA**
+> when a compatible GPU is detected (`MMS_TTS_DEVICE = "auto"`), falling back
+> to CPU otherwise. Unlike flow-matching models, its latency does not scale
+> with text length.
 
 ---
 
@@ -117,8 +107,7 @@ python setup_models.py
 This downloads:
 - `faster-whisper` `base.en` int8 model (~150 MB) → `~/.cache/huggingface/hub/`
 - Argos Translate `en→hi` language pack (~100 MB) → `~/.local/share/argos-translate/`
-- AI4Bharat IndicF5 TTS model (~2 GB, cached by transformers) → `~/.cache/huggingface/hub/`
-- Hindi reference audio prompt for voice cloning (~1 MB) → `prompts/`
+- Facebook MMS-TTS Hindi model (~150 MB, cached by transformers) → `~/.cache/huggingface/hub/`
 
 ### 3. Run
 
@@ -168,7 +157,7 @@ polyglot-talk/
 ├── audio_capture.py     # Thread 1: mic → AudioChunk queue
 ├── asr_engine.py        # Thread 2: AudioChunk → TextSegment (faster-whisper)
 ├── translator.py        # Thread 3: TextSegment → TranslatedSegment (Argos Translate)
-├── tts_engine.py        # Thread 4: TranslatedSegment → WAV files (IndicF5)
+├── tts_engine.py        # Thread 4: TranslatedSegment → WAV files (MMS-TTS)
 ├── models.py            # Dataclasses: AudioChunk, TextSegment, TranslatedSegment
 ├── setup_models.py      # One-time model download + smoke-test script
 ├── requirements.txt     # Pinned Python dependencies
@@ -177,7 +166,7 @@ polyglot-talk/
     ├── test_audio_capture.py   # Live mic recording test
     ├── test_asr.py             # Whisper transcription test
     ├── test_translator.py      # Argos translation test
-    ├── test_tts.py             # IndicF5 synthesis test
+    ├── test_tts.py             # MMS-TTS synthesis test
     ├── test_context.py         # Context-continuity unit tests (mocked)
     └── test_pipeline_e2e.py    # Full pipeline integration test
 ```
@@ -190,7 +179,7 @@ polyglot-talk/
 ┌──────────────┐  audio_queue  ┌──────────────┐  text_queue  ┌──────────────┐  tts_queue  ┌──────────────┐
 │ AudioCapture │  (maxsize=2)  │  ASREngine   │  (maxsize=2) │  Translator  │ (maxsize=2) │  TTSEngine   │
 │  Thread 1    │ ───────────►  │  Thread 2    │ ───────────► │  Thread 3    │ ──────────► │  Thread 4    │
-│  sounddevice │  AudioChunk   │faster-whisper│  TextSegment │argos-translate  TranslatedSeg│  IndicF5     │
+│  sounddevice │  AudioChunk   │faster-whisper│  TextSegment │argos-translate  TranslatedSeg│  MMS-TTS     │
 └──────────────┘               └──────────────┘              └──────────────┘              └──────────────┘
 ```
 
@@ -229,10 +218,8 @@ Key values in [config.py](config.py):
 | `QUEUE_MAXSIZE` | `2` | Max items per inter-thread queue |
 | `CONTEXT_MAXLEN` | `2` | Number of past segments used as MT context |
 | `TTS_OUTPUT_DIR` | `"output"` | Directory where synthesised WAV files are saved |
-| `INDICF5_MODEL_ID` | `"ai4bharat/IndicF5"` | HF model ID for IndicF5 TTS |
-| `INDICF5_DEVICE` | `"auto"` | Device for IndicF5 (`"auto"`, `"cuda"`, or `"cpu"`) |
-| `INDICF5_REF_AUDIO_PATH` | `"prompts/HIN_F_HAPPY_00001.wav"` | Path to reference audio for voice cloning |
-| `INDICF5_REF_TEXT` | `""` | Transcript of reference audio (empty = auto-transcribe) |
+| `MMS_TTS_MODEL_ID` | `"facebook/mms-tts-hin"` | HF per-language checkpoint for MMS-TTS |
+| `MMS_TTS_DEVICE` | `"auto"` | Device for MMS-TTS (`"auto"`, `"cuda"`, or `"cpu"`) |
 
 ---
 
@@ -254,7 +241,7 @@ Key values in [config.py](config.py):
 | `test_audio_capture.py` | Live microphone | Skipped in CI or if no audio device |
 | `test_asr.py` | LibriSpeech dev-clean dataset | WER evaluation on 100 utterances; skipped if dataset absent |
 | `test_translator.py` | Models installed | Verifies Devanagari output |
-| `test_tts.py` | IndicF5 reference audio | Checks 24 kHz WAV output; skipped if reference audio missing |
+| `test_tts.py` | Models installed | Checks WAV output at `model.config.sampling_rate`; no reference audio needed |
 | `test_context.py` | Nothing | Fully mocked — runs anywhere |
 | `test_pipeline_e2e.py` | Models installed | Uses synthetic audio, no mic needed |
 
@@ -265,14 +252,14 @@ Key values in [config.py](config.py):
 ```
 faster-whisper==1.1.0       # ASR — CTranslate2-optimised Whisper
 argostranslate==1.9.6       # Machine translation — OpenNMT + CTranslate2
-f5-tts @ git+https://...    # IndicF5 TTS — high-quality neural TTS for Indian languages
+transformers>=4.49.0        # VitsModel + VitsTokenizer — MMS-TTS (facebook/mms-tts-hin)
 sounddevice==0.5.1          # Microphone input via PortAudio
 soundfile==0.13.1           # FLAC/WAV I/O for ASR benchmarking + TTS output
 jiwer==4.0.0                # WER calculation for ASR evaluation
 numpy>=1.24,<2.0            # Audio arrays
 scipy>=1.11                 # Signal processing utilities
 pytest==8.3.4               # Testing
-transformers==5.2.0         # AutoModel for IndicF5 loading
+transformers==4.49.0         # VitsModel + VitsTokenizer for MMS-TTS
 torch==2.10.0               # PyTorch (CPU ok, CUDA optional)
 ```
 

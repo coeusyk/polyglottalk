@@ -74,23 +74,17 @@ SOURCE_LANG: str = "en"
 TARGET_LANG: str = "hi"
 CONTEXT_MAXLEN: int = 2           # rolling source-segment window for prefix
 
-# ── TTS (AI4Bharat IndicF5) ─────────────────────────────────────────────────
+# ── TTS (Facebook MMS-TTS, VITS-based) ──────────────────────────────────────
 TTS_OUTPUT_DIR: str = "output"          # directory for saved TTS WAV files
 
-INDICF5_MODEL_ID: str = "ai4bharat/IndicF5"
+# Per-language MMS-TTS checkpoint.  Each language has its own weights;
+# there is no generic multi-language checkpoint.  Change this value
+# (e.g. "facebook/mms-tts-eng") together with TARGET_LANG.
+MMS_TTS_MODEL_ID: str = "facebook/mms-tts-hin"  # Hindi
 
-# Device for IndicF5 inference.  "auto" → cuda if available, else cpu.
+# Device for MMS-TTS inference.  "auto" → cuda if available, else cpu.
 # Set to "cpu" explicitly to force CPU-only mode.
-INDICF5_DEVICE: str = "auto"
-
-# Reference speech prompt used to clone voice/prosody characteristics.
-# Downloaded by setup_models.py into the project's prompts/ directory.
-INDICF5_REF_AUDIO_PATH: str = "prompts/HIN_F_HAPPY_00001.wav"
-
-# Transcript of the reference audio.  Leave empty ("") to let IndicF5
-# auto-transcribe it with Whisper on first use (slightly slower first call,
-# then cached).
-INDICF5_REF_TEXT: str = ""
+MMS_TTS_DEVICE: str = "auto"
 
 # ── Logging ─────────────────────────────────────────────────────────────────
 LOG_FORMAT: str = "[%(asctime)s %(threadName)s] %(levelname)s %(message)s"
