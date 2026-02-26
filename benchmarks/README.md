@@ -52,9 +52,9 @@ python benchmarks/benchmark_asr.py
 
 | Output file | Description |
 |---|---|
-| `results/asr/asr_results.csv` | Per-clip WER and latency for every model |
-| `results/asr/asr_summary.csv` | Per-model average WER, average latency, std latency |
-| `results/asr/asr_summary.meta.json` | System snapshot + config used for the run |
+| `results/asr/<machine>/asr_results.csv` | Per-clip WER and latency for every model |
+| `results/asr/<machine>/asr_summary.csv` | Per-model average WER, average latency, std latency |
+| `results/asr/<machine>/asr_summary.meta.json` | System snapshot + config used for the run |
 
 **Key parameters** (edit in `benchmark_asr.py`):
 
@@ -77,8 +77,8 @@ python benchmarks/benchmark_mt.py
 
 | Output file | Description |
 |---|---|
-| `results/mt/mt_results.csv` | Per-sentence BLEU and latency for every model |
-| `results/mt/mt_summary.csv` | Per-model average BLEU, average latency, std latency |
+| `results/mt/<machine>/mt_results.csv` | Per-sentence BLEU and latency for every model |
+| `results/mt/<machine>/mt_summary.csv` | Per-model average BLEU, average latency, std latency |
 
 ---
 
@@ -92,8 +92,8 @@ python benchmarks/benchmark_e2e.py
 
 | Output file | Description |
 |---|---|
-| `results/e2e/e2e_latency_mms.csv` | Per-trial stage times and total E2E time |
-| `results/e2e/e2e_latency_mms.meta.json` | System snapshot + config |
+| `results/e2e/<machine>/e2e_latency_mms.csv` | Per-trial stage times and total E2E time |
+| `results/e2e/<machine>/e2e_latency_mms.meta.json` | System snapshot + config |
 
 WAV files synthesised during the run are written to `output/e2e_benchmark/`.
 
@@ -116,9 +116,9 @@ python benchmarks/benchmark_context.py
 
 | Output file | Description |
 |---|---|
-| `results/context/context_results.csv` | Summary: repetitions, grammar breaks, avg latency per condition |
-| `results/context/context_detail.csv` | Per-sentence outputs for both conditions |
-| `results/context/context_results.meta.json` | System snapshot + config |
+| `results/context/<machine>/context_results.csv` | Summary: repetitions, grammar breaks, avg latency per condition |
+| `results/context/<machine>/context_detail.csv` | Per-sentence outputs for both conditions |
+| `results/context/<machine>/context_results.meta.json` | System snapshot + config |
 
 ---
 
@@ -193,24 +193,30 @@ ASR config: `base.en`, int8, beam_size=1. TTS: `facebook/mms-tts-hin` on CUDA (R
 
 ## Output Files Reference
 
+Output files are written to a **per-machine subdirectory** named `<hostname>_<GPU>` (e.g. `Renegade_RTX4060`) or `<hostname>_CPU` when no CUDA GPU is present. This ensures results from different machines sit side-by-side without overwriting each other.
+
 ```
 results/
 ├── asr/
-│   ├── asr_results.csv          ← per-clip detail (model, clip, WER, latency)
-│   ├── asr_results.meta.json
-│   ├── asr_summary.csv          ← per-model summary
-│   └── asr_summary.meta.json
+│   └── Renegade_RTX4060/
+│       ├── asr_results.csv
+│       ├── asr_results.meta.json
+│       ├── asr_summary.csv
+│       └── asr_summary.meta.json
 ├── mt/
-│   ├── mt_results.csv           ← per-sentence detail (model, BLEU, latency)
-│   └── mt_summary.csv           ← per-model summary
+│   └── Renegade_RTX4060/
+│       ├── mt_results.csv
+│       └── mt_summary.csv
 ├── context/
-│   ├── context_results.csv      ← repetitions / grammar breaks / avg latency
-│   ├── context_results.meta.json
-│   ├── context_detail.csv       ← per-sentence outputs for both conditions
-│   └── context_detail.meta.json
+│   └── Renegade_RTX4060/
+│       ├── context_results.csv
+│       ├── context_results.meta.json
+│       ├── context_detail.csv
+│       └── context_detail.meta.json
 └── e2e/
-    ├── e2e_latency_mms.csv      ← per-trial stage + total time (MMS-TTS)
-    └── e2e_latency_mms.meta.json
+    └── Renegade_RTX4060/
+        ├── e2e_latency_mms.csv
+        └── e2e_latency_mms.meta.json
 ```
 
 Every `*.meta.json` sidecar records the full system snapshot (CPU, GPU, CUDA version, RAM) and the exact `config.py` values active at the time of the run, making results reproducible.

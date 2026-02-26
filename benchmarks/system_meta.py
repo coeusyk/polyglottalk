@@ -98,6 +98,31 @@ def collect() -> dict[str, str]:
     return meta
 
 
+def machine_slug() -> str:
+    """Return a filesystem-safe identifier for the current machine.
+
+    Format: ``<hostname>_<GPU_slug>``  (e.g. ``Renegade_RTX4060``)
+    or      ``<hostname>_CPU``         (when no CUDA GPU is detected).
+
+    Used as a per-machine subdirectory under each ``results/<benchmark>/``
+    folder so that runs on different machines never overwrite each other.
+    """
+    import re
+
+    hostname = re.sub(r"[^A-Za-z0-9_-]", "_", platform.node() or "unknown")
+    gpu = _gpu_info()
+    if gpu.get("cuda_available") == "true":
+        raw = gpu.get("gpu_name", "GPU")
+        # Keep the last two space-separated tokens and strip non-alnum chars.
+        # "NVIDIA GeForce RTX 4060" → "RTX4060"
+        # "NVIDIA A100"             → "NVIDIAA100"
+        tokens = raw.split()
+        gpu_slug = re.sub(r"[^A-Za-z0-9]", "", "".join(tokens[-2:]))
+    else:
+        gpu_slug = "CPU"
+    return f"{hostname}_{gpu_slug}"
+
+
 def write_csv(
     path: str,
     fieldnames: list[str],

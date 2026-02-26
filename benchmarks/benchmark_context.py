@@ -49,7 +49,7 @@ LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-cl
 # Number of consecutive sentences drawn from one chapter for context testing
 CONTEXT_CLIP_COUNT: int = 10
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "context")
-RESULTS_CSV = os.path.join(RESULTS_DIR, "context_results.csv")
+# Output CSV paths are computed per-machine inside run_benchmark().
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -172,7 +172,9 @@ def _trim_prefix(full: str, prefix_tr: str) -> str:
 # ── Main benchmark ───────────────────────────────────────────────────────────
 
 def run_benchmark() -> None:
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    machine_dir = os.path.join(RESULTS_DIR, system_meta.machine_slug())
+    os.makedirs(machine_dir, exist_ok=True)
+    results_csv = os.path.join(machine_dir, "context_results.csv")
 
     sentences = _load_conversation()
     print(f"Loaded {len(sentences)} conversation sentences.\n")
@@ -259,7 +261,7 @@ def run_benchmark() -> None:
     }
 
     # Write per-sentence detail CSV
-    detail_csv = os.path.join(RESULTS_DIR, "context_detail.csv")
+    detail_csv = os.path.join(machine_dir, "context_detail.csv")
     detail_rows = []
     for i in range(len(sentences)):
         is_rep_with = _is_repetition(outputs_with[i-1], outputs_with[i]) if i > 0 else False
@@ -298,13 +300,13 @@ def run_benchmark() -> None:
                                       "without_context": results["avg_latency_without_context"]},
     ]
     system_meta.write_csv(
-        RESULTS_CSV,
+        results_csv,
         fieldnames=["metric", "with_context", "without_context"],
         rows=summary_rows,
         meta=meta,
     )
-    print(f"✓ Summary saved to {RESULTS_CSV}")
-    print(f"  (metadata sidecar: {RESULTS_CSV.replace('.csv', '.meta.json')})")
+    print(f"✓ Summary saved to {results_csv}")
+    print(f"  (metadata sidecar: {results_csv.replace('.csv', '.meta.json')})")
 
     # Print paper-ready table
     print(f"\n{'=' * 60}")

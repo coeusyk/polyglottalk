@@ -24,11 +24,15 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config  # noqa: E402
 
+# benchmarks/ helpers
+sys.path.insert(0, os.path.dirname(__file__))
+import system_meta  # noqa: E402
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
 SENTENCES_FILE = os.path.join(PROJECT_ROOT, "test_sentences", "sentences.txt")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "mt")
-RESULTS_CSV = os.path.join(RESULTS_DIR, "mt_results.csv")
+# Output CSV paths are computed per-machine inside run_benchmark().
 
 
 # ── BLEU calculation ────────────────────────────────────────────────────────
@@ -177,7 +181,9 @@ def _run_marianmt(sentences: list[tuple[str, str]]) -> list[dict]:
 # ── Main benchmark ───────────────────────────────────────────────────────────
 
 def run_benchmark() -> None:
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    machine_dir = os.path.join(RESULTS_DIR, system_meta.machine_slug())
+    os.makedirs(machine_dir, exist_ok=True)
+    results_csv = os.path.join(machine_dir, "mt_results.csv")
 
     sentences = _load_sentences()
     print(f"Loaded {len(sentences)} test sentences.\n")
@@ -215,7 +221,7 @@ def run_benchmark() -> None:
     print()
 
     # ── Write CSV ────────────────────────────────────────────────────────────
-    with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
+    with open(results_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "model", "sentence_id", "source", "reference", "hypothesis",
             "bleu", "latency_s",
@@ -223,10 +229,10 @@ def run_benchmark() -> None:
         writer.writeheader()
         writer.writerows(all_rows)
 
-    print(f"✓ Detailed results saved to {RESULTS_CSV}")
+    print(f"✓ Detailed results saved to {results_csv}")
 
     # Summary CSV
-    summary_csv = os.path.join(RESULTS_DIR, "mt_summary.csv")
+    summary_csv = os.path.join(machine_dir, "mt_summary.csv")
     summary_rows = []
     for model_name, rows in [("argos_translate", argos_rows),
                               ("marianmt_opus-mt-en-hi", marian_rows)]:

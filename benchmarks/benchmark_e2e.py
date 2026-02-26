@@ -33,7 +33,7 @@ import system_meta  # noqa: E402
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
 LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-clean")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "e2e")
-RESULTS_CSV = os.path.join(RESULTS_DIR, "e2e_latency_mms.csv")
+# Output CSV paths are computed per-machine inside run_benchmark().
 
 NUM_TRIALS = 20
 
@@ -84,7 +84,9 @@ def _load_audio(audio_path: str) -> np.ndarray:
 
 
 def run_benchmark() -> None:
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    machine_dir = os.path.join(RESULTS_DIR, system_meta.machine_slug())
+    os.makedirs(machine_dir, exist_ok=True)
+    results_csv = os.path.join(machine_dir, "e2e_latency_mms.csv")
 
     all_entries = _load_librispeech()
     print(f"Discovered {len(all_entries)} clips in LibriSpeech dev-clean.\n")
@@ -244,14 +246,14 @@ def run_benchmark() -> None:
 
     # ── Write CSV (metadata in .meta.json sidecar) ──────────────────────────────────────
     system_meta.write_csv(
-        RESULTS_CSV,
+        results_csv,
         fieldnames=["trial", "clip", "transcript", "translation",
                     "asr_time_s", "mt_time_s", "tts_time_s", "total_e2e_s"],
         rows=all_rows,
         meta=meta,
     )
-    print(f"✓ Results saved to {RESULTS_CSV}")
-    print(f"  (metadata sidecar: {RESULTS_CSV.replace('.csv', '.meta.json')})")
+    print(f"✓ Results saved to {results_csv}")
+    print(f"  (metadata sidecar: {results_csv.replace('.csv', '.meta.json')})")
 
     # Print paper-ready table
     print(f"\n{'=' * 60}")

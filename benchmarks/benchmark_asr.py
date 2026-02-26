@@ -35,7 +35,7 @@ import system_meta  # noqa: E402
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
 LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-clean")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "asr")
-RESULTS_CSV = os.path.join(RESULTS_DIR, "asr_results.csv")
+# Output CSV paths are computed per-machine inside run_benchmark().
 
 MODEL_SIZES = ["tiny.en", "base.en", "small.en"]
 
@@ -144,7 +144,9 @@ def _load_audio(audio_path: str) -> np.ndarray:
 # ── Main benchmark ───────────────────────────────────────────────────────────
 
 def run_benchmark() -> None:
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    machine_dir = os.path.join(RESULTS_DIR, system_meta.machine_slug())
+    os.makedirs(machine_dir, exist_ok=True)
+    results_csv = os.path.join(machine_dir, "asr_results.csv")
 
     all_entries = _load_librispeech()
     print(f"Discovered {len(all_entries)} clips in LibriSpeech dev-clean.")
@@ -254,16 +256,16 @@ def run_benchmark() -> None:
 
     # ── Write CSV (metadata in .meta.json sidecar) ──────────────────────────────────────
     system_meta.write_csv(
-        RESULTS_CSV,
+        results_csv,
         fieldnames=["model", "clip", "ground_truth", "hypothesis", "wer", "latency_s"],
         rows=all_rows,
         meta=meta,
     )
-    print(f"✓ Detailed results saved to {RESULTS_CSV}")
-    print(f"  (metadata sidecar: {RESULTS_CSV.replace('.csv', '.meta.json')})")
+    print(f"✓ Detailed results saved to {results_csv}")
+    print(f"  (metadata sidecar: {results_csv.replace('.csv', '.meta.json')})")
 
     # Summary CSV
-    summary_csv = os.path.join(RESULTS_DIR, "asr_summary.csv")
+    summary_csv = os.path.join(machine_dir, "asr_summary.csv")
     system_meta.write_csv(
         summary_csv,
         fieldnames=["model", "num_clips", "random_seed", "avg_wer", "avg_latency_s", "std_latency_s"],

@@ -1,5 +1,5 @@
 {
-  "run_timestamp": "2026-02-26T16:35:02",
+  "run_timestamp": "2026-02-26T19:07:53",
   "python_version": "3.11.9",
   "hostname": "Renegade",
   "os": "Linux 5.15.167.4-microsoft-standard-WSL2",
@@ -26,10 +26,9 @@
   "config_source_lang": "en",
   "config_target_lang": "hi",
   "config_context_maxlen": "2",
-  "config_tts_model": "ai4bharat/IndicF5",
+  "config_tts_model": "facebook/mms-tts-hin",
   "config_tts_device": "auto",
-  "config_tts_ref_audio": "prompts/HIN_F_HAPPY_00001.wav",
-  "dataset": "LibriSpeech dev-clean (first chapter)",
-  "num_sentences": "10",
-  "context_maxlen": "2"
+  "dataset": "LibriSpeech dev-clean",
+  "dataset_total_clips": "2703",
+  "max_clips_per_model": "500"
 }
