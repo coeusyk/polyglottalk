@@ -171,6 +171,12 @@ def run_benchmark() -> None:
         tts_thread.start()
         tts_thread.join(timeout=30)
 
+        if tts_error[0] is not None:
+            print(
+                f"Warning: TTS failed for clip {fname!r} in trial {trial}: {tts_error[0]}",
+                file=sys.stderr,
+            )
+            continue
         tts_time = tts_time_result[0]
         total_e2e = asr_time + mt_time + tts_time
 
