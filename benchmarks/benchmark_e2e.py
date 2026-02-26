@@ -153,23 +153,48 @@ def run_benchmark() -> None:
         tts_time_result = [0.0]
         tts_error = [None]
 
+        tts_stop_event = threading.Event()
+
         def _tts_worker():
+            engine = None
             try:
                 engine = pyttsx3.init()
-                # Use an explicit TTS speaking rate for pyttsx3 (approx. default).
-                engine.setProperty("rate", 180)
+                engine.setProperty("rate", config.TTS_RATE)
                 t_tts_start = time.perf_counter()
                 engine.say(translated)
-                engine.runAndWait()
+                # Use a non-blocking loop so we can cooperatively stop on timeout.
+                engine.startLoop(False)
+                try:
+                    while engine.isBusy():
+                        if tts_stop_event.is_set():
+                            # Gracefully stop speaking on timeout.
+                            engine.stop()
+                            break
+                        engine.iterate()
+                finally:
+                    engine.endLoop()
                 tts_time_result[0] = time.perf_counter() - t_tts_start
-                engine.stop()
             except Exception as exc:
                 tts_error[0] = exc
                 tts_time_result[0] = 0.0
+            finally:
+                if engine is not None:
+                    try:
+                        engine.stop()
+                    except Exception:
+                        # Best-effort cleanup; ignore errors on shutdown.
+                        pass
 
-        tts_thread = threading.Thread(target=_tts_worker)
+        tts_thread = threading.Thread(target=_tts_worker, daemon=True)
         tts_thread.start()
         tts_thread.join(timeout=30)
+        if tts_thread.is_alive():
+            # TTS exceeded the timeout; request shutdown and wait for completion.
+            tts_stop_event.set()
+            tts_thread.join()
+            if tts_error[0] is None:
+                tts_error[0] = TimeoutError("TTS did not complete within 30 seconds")
+            tts_time_result[0] = 0.0
 
         if tts_error[0] is not None:
             print(
