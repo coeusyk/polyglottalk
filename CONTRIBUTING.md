@@ -92,7 +92,7 @@ Use the component name as the scope:
 ```
 feat(translator): add MarianMT fallback for unsupported language pairs
 
-fix(tts): defer IndicF5 model loading to run() to prevent meta tensor crash
+fix(tts): defer MMS-TTS model loading to run() to prevent initialization issues
 
 perf(asr): set OMP_NUM_THREADS=2 to reduce context-switching overhead
 
@@ -141,13 +141,6 @@ pip install -r requirements.txt
 
 ```bash
 python setup_models.py
-```
-
-IndicF5 is a gated HuggingFace model — authenticate first:
-
-```bash
-hf auth login   # paste your HuggingFace API token
-# Then visit https://huggingface.co/ai4bharat/IndicF5 and accept the terms
 ```
 
 ---

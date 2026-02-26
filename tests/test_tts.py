@@ -12,7 +12,6 @@ Run:
 from __future__ import annotations
 
 import os
-import queue
 import sys
 import threading
 import time
@@ -35,28 +34,7 @@ _SAMPLE_TEXT = "नमस्ते, यह एक परीक्षण है�
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _patch_nfe_step():
-    """Reduce diffusion steps 32 → 8 for all TTS tests (~4× faster synthesis)."""
-    import f5_tts.infer.utils_infer as _utils  # noqa: PLC0415
 
-    original = _utils.nfe_step
-    _utils.nfe_step = 8
-    yield
-    _utils.nfe_step = original
-
-
-@pytest.fixture(scope="session")
-def indicf5_model():
-    """Load IndicF5 once for the entire test session (avoids repeated 1.6 GB disk reads)."""
-    if not _ref_audio_available():
-        pytest.skip(
-            f"IndicF5 reference audio not found at '{_REF_AUDIO}'. "
-            "Run 'python setup_models.py' first."
-        )
-    from transformers import AutoModel  # noqa: PLC0415
-
-    return AutoModel.from_pretrained(config.INDICF5_MODEL_ID, trust_remote_code=True)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +113,7 @@ def test_tts_engine_class(tmp_path: Path) -> None:
     tts_q.put(seg)
     tts_q.put(None)  # sentinel
 
-    # MMS-TTS (VITS, non-autoregressive) is much faster than IndicF5
+    # Wait for synthesis to complete
     t.join(timeout=60)
     assert not t.is_alive(), "TTSEngine thread did not exit within 60 s"
 

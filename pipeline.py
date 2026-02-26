@@ -89,7 +89,7 @@ class Pipeline:
         TTSThread is started first and the other threads are held until
         the TTS model finishes loading (signalled via
         ``_tts_engine._model_ready``).  This prevents the ASR → Translator
-        stages from flooding the tts_queue while IndicF5 is still warming up.
+        stages from flooding the tts_queue while MMS-TTS is still warming up.
         """
         # ── Start TTS first and wait for model to be ready ────────────────
         tts_thread = threading.Thread(
@@ -97,7 +97,7 @@ class Pipeline:
         )
         self._threads.append(tts_thread)
         tts_thread.start()
-        logger.info("Started TTSThread — waiting for IndicF5 model to load…")
+        logger.info("Started TTSThread — waiting for MMS-TTS model to load…")
 
         _TTS_WARMUP_TIMEOUT = 120  # seconds — generous for first-run GPU transfer
         ready = self._tts_engine._model_ready.wait(timeout=_TTS_WARMUP_TIMEOUT)
