@@ -84,14 +84,37 @@ class Pipeline:
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Create and start all four daemon threads."""
-        specs = [
+        """Create and start all four daemon threads.
+
+        TTSThread is started first and the other threads are held until
+        the TTS model finishes loading (signalled via
+        ``_tts_engine._model_ready``).  This prevents the ASR → Translator
+        stages from flooding the tts_queue while IndicF5 is still warming up.
+        """
+        # ── Start TTS first and wait for model to be ready ────────────────
+        tts_thread = threading.Thread(
+            target=self._tts_engine.run, name="TTSThread", daemon=True
+        )
+        self._threads.append(tts_thread)
+        tts_thread.start()
+        logger.info("Started TTSThread — waiting for IndicF5 model to load…")
+
+        _TTS_WARMUP_TIMEOUT = 120  # seconds — generous for first-run GPU transfer
+        ready = self._tts_engine._model_ready.wait(timeout=_TTS_WARMUP_TIMEOUT)
+        if not ready:
+            logger.warning(
+                "TTS model did not finish loading within %ds — "
+                "continuing anyway; first chunks may be dropped.",
+                _TTS_WARMUP_TIMEOUT,
+            )
+
+        # ── Start remaining threads once TTS is ready ─────────────────────
+        remaining = [
             ("AudioCaptureThread", self._audio_capture.run),
             ("ASRThread", self._asr_engine.run),
             ("TranslatorThread", self._translator.run),
-            ("TTSThread", self._tts_engine.run),
         ]
-        for name, target in specs:
+        for name, target in remaining:
             t = threading.Thread(target=target, name=name, daemon=True)
             self._threads.append(t)
             t.start()

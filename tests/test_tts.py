@@ -47,30 +47,53 @@ ref_audio_present = pytest.mark.skipif(
 )
 
 # ---------------------------------------------------------------------------
+# Session-scoped fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _patch_nfe_step():
+    """Reduce diffusion steps 32 → 8 for all TTS tests (~4× faster synthesis)."""
+    import f5_tts.infer.utils_infer as _utils  # noqa: PLC0415
+
+    original = _utils.nfe_step
+    _utils.nfe_step = 8
+    yield
+    _utils.nfe_step = original
+
+
+@pytest.fixture(scope="session")
+def indicf5_model():
+    """Load IndicF5 once for the entire test session (avoids repeated 1.6 GB disk reads)."""
+    if not _ref_audio_available():
+        pytest.skip(
+            f"IndicF5 reference audio not found at '{_REF_AUDIO}'. "
+            "Run 'python setup_models.py' first."
+        )
+    from transformers import AutoModel  # noqa: PLC0415
+
+    return AutoModel.from_pretrained(config.INDICF5_MODEL_ID, trust_remote_code=True)
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 @ref_audio_present
-def test_indicf5_model_loads() -> None:
+def test_indicf5_model_loads(indicf5_model) -> None:
     """AutoModel.from_pretrained should load without error."""
-    from transformers import AutoModel  # noqa: PLC0415
-
-    model = AutoModel.from_pretrained(config.INDICF5_MODEL_ID, trust_remote_code=True)
-    assert model is not None, "AutoModel.from_pretrained returned None"
+    assert indicf5_model is not None, "AutoModel.from_pretrained returned None"
     print("✓ test_indicf5_model_loads passed")
 
 
 @ref_audio_present
-def test_indicf5_synthesises_wav(tmp_path: Path) -> None:
+def test_indicf5_synthesises_wav(indicf5_model, tmp_path: Path) -> None:
     """IndicF5 should produce a non-empty float32 WAV at 24 kHz."""
     import numpy as np  # noqa: PLC0415
     import soundfile as sf  # noqa: PLC0415
-    from transformers import AutoModel  # noqa: PLC0415
 
-    model = AutoModel.from_pretrained(config.INDICF5_MODEL_ID, trust_remote_code=True)
-
-    audio = model(
+    audio = indicf5_model(
         _SAMPLE_TEXT,
         ref_audio_path=str(_REF_AUDIO),
         ref_text=config.INDICF5_REF_TEXT,

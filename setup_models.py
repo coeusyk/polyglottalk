@@ -146,8 +146,65 @@ def verify_translation_model() -> None:
 
 # ── Step 3: AI4Bharat IndicF5 TTS ───────────────────────────────────────────
 
-def download_tts_model() -> None:
-    """Download IndicF5 model weights and a Hindi reference audio prompt."""
+def _transcribe_ref_audio(ref_audio_path: str, asr_model=None) -> str:
+    """Transcribe the reference audio with faster-whisper and return the text.
+
+    A dedicated ASR model is loaded if one is not passed in.  The result is
+    saved as a ``.txt`` sidecar next to the audio file so
+    TTSEngine can load it at runtime without re-transcribing.
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+    import soundfile as _sf  # noqa: PLC0415
+
+    ref_path = _Path(ref_audio_path)
+    sidecar = ref_path.with_suffix(".txt")
+
+    if sidecar.exists():
+        text = sidecar.read_text(encoding="utf-8").strip()
+        _ok(f"Reference audio transcript already cached: \"{text}\"")
+        return text
+
+    _info("Transcribing reference audio to generate ref_text sidecar…")
+
+    if asr_model is None:
+        from faster_whisper import WhisperModel  # noqa: PLC0415
+        asr_model = WhisperModel(
+            config.ASR_MODEL_SIZE,
+            device=config.ASR_DEVICE,
+            compute_type=config.ASR_COMPUTE_TYPE,
+        )
+
+    # Load the reference WAV (may not be 16 kHz — resample if needed)
+    audio_data, sr = _sf.read(str(ref_path), dtype="float32")
+    if audio_data.ndim > 1:
+        audio_data = audio_data.mean(axis=1)  # stereo → mono
+    if sr != config.SAMPLE_RATE:
+        from scipy.signal import resample_poly  # noqa: PLC0415
+        import math  # noqa: PLC0415
+        gcd = math.gcd(int(config.SAMPLE_RATE), int(sr))
+        audio_data = resample_poly(audio_data, config.SAMPLE_RATE // gcd, sr // gcd).astype(np.float32)
+
+    segments_gen, _ = asr_model.transcribe(
+        audio_data,
+        beam_size=config.ASR_BEAM_SIZE,
+        # Do NOT restrict to English — ref audio is Hindi
+        vad_filter=False,
+    )
+    text = " ".join(seg.text.strip() for seg in segments_gen).strip()
+
+    if text:
+        sidecar.write_text(text, encoding="utf-8")
+        _ok(f"Ref_text sidecar saved → {sidecar}")
+        _ok(f"Transcript: \"{text}\"")
+    else:
+        _fail("Reference audio transcription produced empty text — sidecar not written.")
+
+    return text
+
+
+def download_tts_model(asr_model=None) -> None:
+    """Download IndicF5 model weights, Vocos vocoder, and a Hindi reference audio prompt."""
     print("\n[3/3] Downloading AI4Bharat IndicF5 TTS model…")
     _info(f"Model: {config.INDICF5_MODEL_ID}  device: {config.INDICF5_DEVICE}")
 
@@ -161,47 +218,65 @@ def download_tts_model() -> None:
     elapsed = time.perf_counter() - t0
     _ok(f"IndicF5 model files downloaded to cache in {elapsed:.1f}s")
 
+    # ── Pre-download Vocos vocoder ────────────────────────────────────────
+    # IndicF5 pulls this automatically on first use; pre-downloading here
+    # prevents a runtime download stall during a live session.
+    _VOCOS_REPO = "charactr/vocos-mel-24khz"
+    _info(f"Pre-downloading Vocos vocoder ({_VOCOS_REPO})…")
+    t0 = time.perf_counter()
+    try:
+        snapshot_download(_VOCOS_REPO)
+        elapsed = time.perf_counter() - t0
+        _ok(f"Vocos vocoder cached in {elapsed:.1f}s")
+    except Exception as exc:  # pylint: disable=broad-except
+        _fail(f"Vocos pre-download failed: {exc} — will be downloaded at runtime.")
+
     # ── Download Hindi reference audio prompt ─────────────────────────────
     from pathlib import Path as _Path  # noqa: PLC0415
     from huggingface_hub import hf_hub_download  # noqa: PLC0415
 
     ref_dest = _Path(config.INDICF5_REF_AUDIO_PATH)
-    if ref_dest.exists():
-        _ok(f"Hindi reference audio already present: {ref_dest}")
-        return
+    if not ref_dest.exists():
+        ref_dest.parent.mkdir(parents=True, exist_ok=True)
+        ref_filename = ref_dest.name  # e.g. HIN_F_HAPPY_00001.wav
 
-    ref_dest.parent.mkdir(parents=True, exist_ok=True)
-    ref_filename = ref_dest.name  # e.g. HIN_F_HAPPY_00001.wav
+        _info(f"Downloading reference audio '{ref_filename}' from {config.INDICF5_MODEL_ID}…")
 
-    _info(f"Downloading reference audio '{ref_filename}' from {config.INDICF5_MODEL_ID}…")
-    
-    try:
-        downloaded = hf_hub_download(
-            repo_id=config.INDICF5_MODEL_ID,
-            filename=f"prompts/{ref_filename}",
-        )
-        import shutil  # noqa: PLC0415
-        shutil.copy2(downloaded, ref_dest)
-        _ok(f"Hindi reference audio saved → {ref_dest}")
-
-    except Exception as exc:  # pylint: disable=broad-except
-        # Fallback: try the Punjabi prompt that ships in the README example
-        _info(f"'{ref_filename}' not found ({exc}); attempting Punjabi fallback…")
         try:
-            fallback_file = "PAN_F_HAPPY_00001.wav"
             downloaded = hf_hub_download(
                 repo_id=config.INDICF5_MODEL_ID,
-                filename=f"prompts/{fallback_file}",
+                filename=f"prompts/{ref_filename}",
             )
             import shutil  # noqa: PLC0415
             shutil.copy2(downloaded, ref_dest)
-            _ok(f"Fallback Punjabi reference audio saved → {ref_dest}")
-        except Exception as exc2:  # pylint: disable=broad-except
-            _fail(
-                f"Could not download any reference audio: {exc2}\n"
-                "   Please manually place a short (~10s) Hindi WAV file at "
-                f"{ref_dest} and re-run."
-            )
+            _ok(f"Hindi reference audio saved → {ref_dest}")
+
+        except Exception as exc:  # pylint: disable=broad-except
+            # Fallback: try the Punjabi prompt that ships in the README example
+            _info(f"'{ref_filename}' not found ({exc}); attempting Punjabi fallback…")
+            try:
+                fallback_file = "PAN_F_HAPPY_00001.wav"
+                downloaded = hf_hub_download(
+                    repo_id=config.INDICF5_MODEL_ID,
+                    filename=f"prompts/{fallback_file}",
+                )
+                import shutil  # noqa: PLC0415
+                shutil.copy2(downloaded, ref_dest)
+                _ok(f"Fallback Punjabi reference audio saved → {ref_dest}")
+            except Exception as exc2:  # pylint: disable=broad-except
+                _fail(
+                    f"Could not download any reference audio: {exc2}\n"
+                    "   Please manually place a short (~10s) Hindi WAV file at "
+                    f"{ref_dest} and re-run."
+                )
+    else:
+        _ok(f"Hindi reference audio already present: {ref_dest}")
+
+    # ── Transcribe reference audio → sidecar .txt ─────────────────────────
+    # TTSEngine reads this at startup so IndicF5 never needs to run its own
+    # internal Whisper pass, saving ~20-30 s on every run.
+    if ref_dest.exists():
+        _transcribe_ref_audio(str(ref_dest), asr_model=asr_model)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -227,7 +302,9 @@ def main() -> None:
     if not args.skip_verify:
         verify_translation_model()
 
-    download_tts_model()
+    # Pass the already-loaded ASR model so download_tts_model can transcribe
+    # the reference audio without loading a second Whisper instance.
+    download_tts_model(asr_model=asr_model)
 
     print("\n" + "=" * 60)
     print(" ✓ All models ready for offline use.")

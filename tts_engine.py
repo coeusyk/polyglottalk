@@ -65,6 +65,11 @@ class TTSEngine:
         # Model loaded in run() — do NOT load here
         self._model: Optional[Any] = None
 
+        # Set by run() once the model is loaded and ref_text is resolved.
+        # Pipeline.start() waits on this before opening the microphone so
+        # there is no queue build-up while the heavy model initialises.
+        self._model_ready = threading.Event()
+
     # ── Thread target ──────────────────────────────────────────────────────
 
     def run(self) -> None:
@@ -114,11 +119,31 @@ class TTSEngine:
                 ref_audio,
             )
 
+        # Load ref_text from sidecar .txt file when config leaves it empty.
+        # setup_models.py writes this file by transcribing the reference audio
+        # with faster-whisper so the expensive Whisper pass never happens at
+        # synthesis time.
+        if not ref_text:
+            sidecar = Path(ref_audio).with_suffix(".txt")
+            if sidecar.exists():
+                ref_text = sidecar.read_text(encoding="utf-8").strip()
+                logger.info("Loaded ref_text from sidecar '%s': %s", sidecar, ref_text)
+            else:
+                logger.warning(
+                    "INDICF5_REF_TEXT is empty and no sidecar '%s' found. "
+                    "IndicF5 will auto-transcribe the reference audio on the first "
+                    "synthesis call (adds ~20-30 s). Run 'python setup_models.py' "
+                    "to pre-generate the sidecar and avoid this delay.",
+                    sidecar,
+                )
+
         logger.info(
             "TTS engine ready (IndicF5, device=%s, ref_audio=%s)",
             self._device,
             ref_audio,
         )
+        # Signal Pipeline.start() that TTS is ready to synthesise
+        self._model_ready.set()
 
         while not self._stop_event.is_set():
             try:
