@@ -151,24 +151,31 @@ python main.py --log-level DEBUG
 
 ```
 polyglot-talk/
-├── main.py              # Entry point — parses CLI args, starts pipeline
-├── config.py            # All constants: sample rate, model IDs, queue sizes
-├── pipeline.py          # Orchestrator — wires threads and queues, manages lifecycle
-├── audio_capture.py     # Thread 1: mic → AudioChunk queue
-├── asr_engine.py        # Thread 2: AudioChunk → TextSegment (faster-whisper)
-├── translator.py        # Thread 3: TextSegment → TranslatedSegment (Argos Translate)
-├── tts_engine.py        # Thread 4: TranslatedSegment → WAV files (MMS-TTS)
-├── models.py            # Dataclasses: AudioChunk, TextSegment, TranslatedSegment
-├── setup_models.py      # One-time model download + smoke-test script
-├── requirements.txt     # Pinned Python dependencies
-├── IMPLEMENTATION_PLAN.md
-└── tests/
-    ├── test_audio_capture.py   # Live mic recording test
-    ├── test_asr.py             # Whisper transcription test
-    ├── test_translator.py      # Argos translation test
-    ├── test_tts.py             # MMS-TTS synthesis test
-    ├── test_context.py         # Context-continuity unit tests (mocked)
-    └── test_pipeline_e2e.py    # Full pipeline integration test
+├── polyglot_talk/         ← core package (7 modules, relative imports)
+│   ├── __init__.py
+│   ├── config.py
+│   ├── models.py
+│   ├── pipeline.py
+│   ├── audio_capture.py
+│   ├── asr_engine.py
+│   ├── translator.py
+│   └── tts_engine.py
+├── benchmarks/            ← unchanged
+├── tests/                 ← unchanged
+├── data/                  ← datasets
+│   ├── dev-clean/
+│   └── test_sentences/
+├── results/
+│   └── deprecated/        ← was results_deprecated/
+├── output/
+├── docs/                  ← planning & contribution docs
+│   ├── CONTRIBUTING.md
+│   ├── IMPLEMENTATION_PLAN.md
+│   └── PolyglotTalk_Task_List.md
+├── main.py
+├── setup_models.py
+├── conftest.py
+└── requirements.txt
 ```
 
 ---
