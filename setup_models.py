@@ -13,19 +13,25 @@ What it downloads
     Installed to:  ~/.local/share/argos-translate/packages/  (Linux)
                    %LOCALAPPDATA%\\argos-translate\\packages\\  (Windows)
 
-2b. Helsinki-NLP MarianMT checkpoint for the active TARGET_LANG — ~300 MB
-    [all non-Hindi languages]
+2b. Helsinki-NLP MarianMT checkpoint for TARGET_LANG — ~300 MB
+    [Marathi and Malayalam only — only Indian languages with confirmed checkpoints]
     Cached to:  ~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-en-{xx}/
+
+2c. facebook/nllb-200-distilled-600M — ~1.2 GB
+    [Tamil, Telugu, Kannada, Bengali, Gujarati — no Helsinki-NLP checkpoint exists]
+    Cached to:  ~/.cache/huggingface/hub/models--facebook--nllb-200-distilled-600M/
 
 3.  Facebook MMS-TTS model for TARGET_LANG — ~150 MB
     Cached to:  ~/.cache/huggingface/hub/models--facebook--mms-tts-{lang}/
 
-Total:  ~400-650 MB depending on cached HuggingFace files and language selection.
+Total:  ~400 MB – 1.5 GB depending on language and cached HuggingFace files.
 
 Note on MT backend
 ------------------
 Argos Translate only publishes an en→hi offline package for Indian languages.
-All other Indian language pairs use Helsinki-NLP MarianMT via transformers.
+Marathi and Malayalam use Helsinki-NLP MarianMT (confirmed checkpoints exist).
+Tamil, Telugu, Kannada, Bengali, and Gujarati use facebook/nllb-200-distilled-600M
+because Helsinki-NLP does not publish en→{ta,te,kn,bn,gu} opus-mt checkpoints.
 This script installs whichever backend applies to config.TARGET_LANG.
 
 Usage
@@ -163,7 +169,8 @@ def download_argos_model() -> bool:
 def download_marian_model() -> None:
     """Download the Helsinki-NLP MarianMT checkpoint for TARGET_LANG.
 
-    This is a no-op if TARGET_LANG is Hindi (handled by Argos).
+    This is a no-op unless TARGET_LANG is Marathi or Malayalam — the only
+    Indian languages for which a Helsinki-NLP opus-mt checkpoint exists.
     The checkpoint is downloaded to the HuggingFace hub cache and
     does not need to be re-downloaded on subsequent runs.
     """
@@ -185,6 +192,30 @@ def download_marian_model() -> None:
     _ok(f"MarianMT model downloaded/verified in {elapsed:.1f}s")
 
 
+def download_nllb_model() -> None:
+    """Download facebook/nllb-200-distilled-600M for TARGET_LANG.
+
+    Used for Tamil, Telugu, Kannada, Bengali, and Gujarati — languages that
+    lack a Helsinki-NLP opus-mt checkpoint.  The model is a ~1.2 GB download
+    cached to ~/.cache/huggingface/hub/ and shared across all NLLB languages.
+    This is a no-op if TARGET_LANG uses the Argos or Marian backend.
+    """
+    if config.MT_BACKEND != "nllb":
+        return
+
+    print("\n[2c/3] Downloading NLLB-200 translation model…")
+    _info(f"Model: {config.NLLB_MODEL_ID}  target tag: {config.NLLB_LANG_MAP[config.TARGET_LANG]}")
+
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    t0 = time.perf_counter()
+    _tokenizer = AutoTokenizer.from_pretrained(config.NLLB_MODEL_ID)
+    _model = AutoModelForSeq2SeqLM.from_pretrained(config.NLLB_MODEL_ID)
+    elapsed = time.perf_counter() - t0
+    del _tokenizer, _model  # free memory — just needed for cache warm-up
+    _ok(f"NLLB-200 model downloaded/verified in {elapsed:.1f}s")
+
+
 def verify_translation_model() -> None:
     """Smoke-test whichever MT backend is active for TARGET_LANG."""
     _info('Smoke-testing translation model ("Hello")…')
@@ -193,12 +224,26 @@ def verify_translation_model() -> None:
         import argostranslate.translate
         argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
         result = argostranslate.translate.translate("Hello", config.SOURCE_LANG, argos_target)
-    else:
+    elif config.MT_BACKEND == "marian":
         from transformers import pipeline as hf_pipeline
         import torch
         model_id = config.MARIANMT_MODEL_MAP[config.TARGET_LANG]
         device = 0 if torch.cuda.is_available() else -1
         pipe = hf_pipeline("translation", model=model_id, device=device)
+        result = pipe("Hello")[0]["translation_text"]
+    else:  # nllb
+        from transformers import pipeline as hf_pipeline
+        import torch
+        nllb_tgt = config.NLLB_LANG_MAP[config.TARGET_LANG]
+        device = 0 if torch.cuda.is_available() else -1
+        pipe = hf_pipeline(
+            "translation",
+            model=config.NLLB_MODEL_ID,
+            src_lang="eng_Latn",
+            tgt_lang=nllb_tgt,
+            device=device,
+            max_length=400,
+        )
         result = pipe("Hello")[0]["translation_text"]
 
     if not result or not result.strip():
@@ -245,9 +290,10 @@ def main() -> None:
     if not args.skip_verify:
         verify_asr_model(asr_model)
 
-    # MT backend: Argos (Hindi) or MarianMT (all other Indian languages)
+    # MT backend: Argos (Hindi), MarianMT (Marathi/Malayalam), or NLLB (others)
     download_argos_model()    # no-op for non-Hindi; non-fatal if package missing
-    download_marian_model()   # no-op for Hindi
+    download_marian_model()   # no-op unless TARGET_LANG is Marathi or Malayalam
+    download_nllb_model()     # no-op unless TARGET_LANG needs NLLB
 
     if not args.skip_verify:
         verify_translation_model()

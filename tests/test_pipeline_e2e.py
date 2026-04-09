@@ -100,20 +100,23 @@ class _MockTTSEngine:
 
 @pytest.fixture(scope="module")
 def check_models_installed():
-    """Skip if Argos or faster-whisper are not ready."""
-    import argostranslate.package
+    """Skip if the active MT model or faster-whisper are not ready."""
+    if config.MT_BACKEND == "argos":
+        import argostranslate.package
 
-    installed = argostranslate.package.get_installed_packages()
-    argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
-    found = any(
-        p.from_code == config.SOURCE_LANG and p.to_code == argos_target
-        for p in installed
-    )
-    if not found:
-        pytest.skip(
-            f"Argos {config.SOURCE_LANG}→{argos_target} not installed. "
-            "Run python setup_models.py."
+        installed = argostranslate.package.get_installed_packages()
+        argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
+        found = any(
+            p.from_code == config.SOURCE_LANG and p.to_code == argos_target
+            for p in installed
         )
+        if not found:
+            pytest.skip(
+                f"Argos {config.SOURCE_LANG}→{argos_target} not installed. "
+                "Run python setup_models.py."
+            )
+    # MarianMT and NLLB: models are cached in HuggingFace hub; no installed-package
+    # check needed. If the cache is empty the test will fail with a clear error.
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

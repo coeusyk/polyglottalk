@@ -20,7 +20,7 @@ from polyglot_talk import config  # noqa: F401
 
 import pytest
 
-_ARGOS_TARGET = config.ARGOS_LANG_MAP[config.TARGET_LANG]
+_ARGOS_TARGET = config.ARGOS_LANG_MAP["hin"]  # Argos only supports Hindi for Indian languages
 
 
 @pytest.fixture(scope="module")

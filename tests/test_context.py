@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from polyglot_talk import config  # noqa: F401
 import pytest
 
-_ARGOS_TARGET = config.ARGOS_LANG_MAP[config.TARGET_LANG]
+_ARGOS_TARGET = config.ARGOS_LANG_MAP["hin"]  # Argos only supports Hindi for Indian languages
 
 
 # ── Fixture: a Translator wired to mocked argostranslate ─────────────────────
@@ -62,6 +62,7 @@ def make_translator():
             text_queue=queue.Queue(),
             tts_queue=queue.Queue(),
             stop_event=threading.Event(),
+            target_lang="hin",   # force Argos backend regardless of config.TARGET_LANG
         )
         # mock_tr patches argostranslate.translate.translate which is called
         # by t._translate(text) — no need to replace the instance method.
@@ -177,7 +178,7 @@ def test_trim_prefix_exact() -> None:
         fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         from polyglot_talk.translator import Translator
-        t = Translator(queue.Queue(), queue.Queue(), threading.Event())
+        t = Translator(queue.Queue(), queue.Queue(), threading.Event(), target_lang="hin")
 
     result = t._trim_prefix("नमस्ते कैसे हैं", "नमस्ते")
     assert result == "कैसे हैं", f"Expected 'कैसे हैं', got {result!r}"
@@ -198,7 +199,7 @@ def test_trim_prefix_no_match_returns_full() -> None:
         fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         from polyglot_talk.translator import Translator
-        t = Translator(queue.Queue(), queue.Queue(), threading.Event())
+        t = Translator(queue.Queue(), queue.Queue(), threading.Event(), target_lang="hin")
 
     result = t._trim_prefix("completely different text", "XYZ ABC DEF")
     assert result == "completely different text", f"Should be unchanged: {result!r}"
@@ -230,7 +231,7 @@ def test_empty_text_skipped(make_translator) -> None:
         mtr.return_value = "translation"
 
         from polyglot_talk.translator import Translator
-        t = Translator(text_q, tts_q, stop)
+        t = Translator(text_q, tts_q, stop, target_lang="hin")
 
         text_q.put(TextSegment(chunk_id=0, text="   "))  # whitespace — should skip
         text_q.put(None)  # sentinel

@@ -71,7 +71,7 @@ SOURCE_LANG: str = "en"       # ISO 639-1 — shared by Whisper ASR and all MT b
 # Active output language.  Must be a key in both MMS_TTS_MODEL_MAP and
 # ARGOS_LANG_MAP or MARIANMT_MODEL_MAP.  Changing only this constant
 # switches the full pipeline (ASR → MT → TTS).
-TARGET_LANG: str = "hin"      # ISO 639-3 — used as primary language key
+TARGET_LANG: str = "guj"      # ISO 639-3 — used as primary language key
 
 # Languages for which Argos Translate publishes an en→xx offline package.
 # As of 2025, only Hindi is available for Indian languages via argospm.
@@ -83,21 +83,36 @@ ARGOS_LANG_MAP: dict[str, str] = {
     "hin": "hi",   # Hindi — only Indian language with an Argos en→xx package
 }
 
-# ISO 639-3 → HuggingFace MarianMT checkpoint for all non-Hindi Indian langs.
-# Helsinki-NLP opus-mt models are offline, ~300 MB each, load via transformers.
+# ISO 639-3 → HuggingFace MarianMT checkpoint.
+# Helsinki-NLP only publishes en→xx opus-mt packages for a small subset of Indian
+# languages (verified 2025-01).  Marathi and Malayalam have confirmed checkpoints;
+# Tamil, Telugu, Kannada, Bengali, and Gujarati do NOT — those fall through to
+# the NLLB-200 backend below.
 MARIANMT_MODEL_MAP: dict[str, str] = {
-    "tam": "Helsinki-NLP/opus-mt-en-ta",   # Tamil
-    "tel": "Helsinki-NLP/opus-mt-en-te",   # Telugu
-    "kan": "Helsinki-NLP/opus-mt-en-kn",   # Kannada
-    "ben": "Helsinki-NLP/opus-mt-en-bn",   # Bengali
-    "mal": "Helsinki-NLP/opus-mt-en-ml",   # Malayalam
-    "mar": "Helsinki-NLP/opus-mt-en-mr",   # Marathi
-    "guj": "Helsinki-NLP/opus-mt-en-gu",   # Gujarati
+    "mal": "Helsinki-NLP/opus-mt-en-ml",   # Malayalam — confirmed on HuggingFace
+    "mar": "Helsinki-NLP/opus-mt-en-mr",   # Marathi  — confirmed on HuggingFace
+}
+
+# ISO 639-3 → FLORES-200 / NLLB language tag for the five Indian languages that
+# have no Helsinki-NLP opus-mt checkpoint.  Used with facebook/nllb-200-distilled-600M
+# which ships within the already-installed transformers library — no new dependency.
+NLLB_MODEL_ID: str = "facebook/nllb-200-distilled-600M"
+NLLB_LANG_MAP: dict[str, str] = {
+    "tam": "tam_Taml",   # Tamil
+    "tel": "tel_Telu",   # Telugu
+    "kan": "kan_Knda",   # Kannada
+    "ben": "ben_Beng",   # Bengali
+    "guj": "guj_Gujr",   # Gujarati
 }
 
 # MT_BACKEND is derived automatically from TARGET_LANG — do not set manually.
-# Values: "argos" | "marian"
-MT_BACKEND: str = "argos" if TARGET_LANG in ARGOS_SUPPORTED_LANGS else "marian"
+# Values: "argos" (Hindi) | "marian" (Marathi/Malayalam) | "nllb" (all others)
+if TARGET_LANG in ARGOS_SUPPORTED_LANGS:
+    MT_BACKEND: str = "argos"
+elif TARGET_LANG in MARIANMT_MODEL_MAP:
+    MT_BACKEND = "marian"
+else:
+    MT_BACKEND = "nllb"
 
 CONTEXT_MAXLEN: int = 2           # rolling source-segment window for prefix
 
@@ -125,8 +140,8 @@ assert TARGET_LANG in MMS_TTS_MODEL_MAP, (
     f"Valid values: {sorted(MMS_TTS_MODEL_MAP)}"
 )
 
-# Every language must have either an Argos or a MarianMT entry — never neither.
-_ALL_MT_LANGS = set(ARGOS_LANG_MAP) | set(MARIANMT_MODEL_MAP)
+# Every language must have an Argos, MarianMT, or NLLB entry — never none.
+_ALL_MT_LANGS = set(ARGOS_LANG_MAP) | set(MARIANMT_MODEL_MAP) | set(NLLB_LANG_MAP)
 assert set(MMS_TTS_MODEL_MAP).issubset(_ALL_MT_LANGS), (
     f"These TTS languages have no MT backend: "
     f"{set(MMS_TTS_MODEL_MAP) - _ALL_MT_LANGS}"

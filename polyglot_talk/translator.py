@@ -64,7 +64,15 @@ class Translator:
         self._source_lang = source_lang
         # _target_lang is the ISO 639-3 code used for display (e.g. "hin", "tam").
         self._target_lang = target_lang
-        self._mt_backend: str = config.MT_BACKEND  # "argos" | "marian"
+        # Derive backend from the *instance* target_lang, not the global config constant,
+        # so that passing target_lang="hin" always uses Argos even if config.TARGET_LANG
+        # is set to another language.
+        if target_lang in config.ARGOS_SUPPORTED_LANGS:
+            self._mt_backend: str = "argos"
+        elif target_lang in config.MARIANMT_MODEL_MAP:
+            self._mt_backend = "marian"
+        else:
+            self._mt_backend = "nllb"
 
         self._context_source: Deque[str] = collections.deque(maxlen=context_maxlen)
         self._context_translated: Deque[str] = collections.deque(maxlen=context_maxlen)
@@ -72,6 +80,7 @@ class Translator:
         # Backend-specific objects — set by _load_model()
         self._argos_translate_fn: Callable[[str], str] | None = None
         self._marian_pipeline: Any | None = None
+        self._nllb_pipeline: Any | None = None
 
         logger.info(
             "Loading translation model (%s → %s) via %s…",
@@ -197,14 +206,18 @@ class Translator:
     # ── Translation dispatch ────────────────────────────────────────────────
 
     def _translate(self, text: str) -> str:
-        """Dispatch to the active MT backend (Argos or MarianMT)."""
+        """Dispatch to the active MT backend (Argos, MarianMT, or NLLB)."""
         if self._mt_backend == "argos":
             assert self._argos_translate_fn is not None
             return self._argos_translate_fn(text)
-        else:
+        elif self._mt_backend == "marian":
             assert self._marian_pipeline is not None
             result = self._marian_pipeline(text)
             # transformers pipeline returns list[dict] with key "translation_text"
+            return result[0]["translation_text"]
+        else:  # nllb
+            assert self._nllb_pipeline is not None
+            result = self._nllb_pipeline(text)
             return result[0]["translation_text"]
 
     def _load_model(self) -> None:
@@ -218,8 +231,13 @@ class Translator:
         MarianMT path
         -------------
         Loads Helsinki-NLP/opus-mt-en-{xx} via transformers pipeline.
-        The model is downloaded on first use; subsequent runs use the
-        HuggingFace cache (~/.cache/huggingface/hub/).
+        Used for Marathi (mr) and Malayalam (ml) which have confirmed checkpoints.
+
+        NLLB path
+        ---------
+        Loads facebook/nllb-200-distilled-600M for the five Indian languages
+        that lack a Helsinki-NLP opus-mt checkpoint (Tamil, Telugu, Kannada,
+        Bengali, Gujarati).  Uses the same transformers pipeline API.
 
         Raises
         ------
@@ -249,7 +267,7 @@ class Translator:
             self._argos_translate_fn = lambda text: argostranslate.translate.translate(text, src, tgt)
             logger.debug("Argos backend ready: %s → %s", src, tgt)
 
-        else:  # marian
+        elif self._mt_backend == "marian":
             from transformers import pipeline as hf_pipeline
 
             model_id = config.MARIANMT_MODEL_MAP[self._target_lang]
@@ -264,6 +282,25 @@ class Translator:
                 device=device,
             )
             logger.debug("MarianMT backend ready: %s (device=%d)", model_id, device)
+
+        else:  # nllb
+            from transformers import pipeline as hf_pipeline
+
+            nllb_tgt = config.NLLB_LANG_MAP[self._target_lang]
+            import torch
+            device = 0 if torch.cuda.is_available() else -1
+            self._nllb_pipeline = hf_pipeline(
+                "translation",
+                model=config.NLLB_MODEL_ID,
+                src_lang="eng_Latn",
+                tgt_lang=nllb_tgt,
+                device=device,
+                max_length=400,
+            )
+            logger.debug(
+                "NLLB backend ready: %s → %s (device=%d)",
+                config.NLLB_MODEL_ID, nllb_tgt, device,
+            )
 
     # ── Queue helper ────────────────────────────────────────────────────────
 

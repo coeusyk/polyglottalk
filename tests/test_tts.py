@@ -129,11 +129,12 @@ def test_tts_engine_class(tmp_path: Path) -> None:
 
 
 def test_model_map_completeness() -> None:
-    """MMS_TTS_MODEL_MAP must have ≥6 entries; every key must be in ARGOS_LANG_MAP."""
+    """MMS_TTS_MODEL_MAP must have ≥6 entries; every key must have an MT backend."""
     assert len(config.MMS_TTS_MODEL_MAP) >= 6
+    all_mt_langs = set(config.ARGOS_LANG_MAP) | set(config.MARIANMT_MODEL_MAP) | set(config.NLLB_LANG_MAP)
     for lang_code in config.MMS_TTS_MODEL_MAP:
-        assert lang_code in config.ARGOS_LANG_MAP, (
-            f"MMS_TTS_MODEL_MAP key {lang_code!r} missing from ARGOS_LANG_MAP"
+        assert lang_code in all_mt_langs, (
+            f"MMS_TTS_MODEL_MAP key {lang_code!r} missing from all MT backend maps"
         )
 
 
