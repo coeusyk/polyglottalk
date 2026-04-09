@@ -208,7 +208,7 @@ End-to-end latency ≈ `stride_duration + ASR_time + MT_time` ≈ **4–6 second
 
 ## Configuration
 
-Key values in [config.py](config.py):
+Key values in [config.py](polyglot_talk/config.py):
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -286,7 +286,7 @@ torch==2.10.0               # PyTorch (CPU ok, CUDA optional)
 
 ## Future Upgrades
 
-- **More language pairs:** Run `python setup_models.py` after updating `TARGET_LANG` in `config.py`
+- **More language pairs:** Run `python setup_models.py` after updating `TARGET_LANG` in `polyglot_talk/config.py`
 - **Live playback:** Optional mode to play TTS output to speakers (separate input device to prevent feedback)
 - **Improved VAD:** Add Silero-VAD before `ASREngine` to pre-filter silence, eliminating ASR hallucinations
 - **Custom voice cloning:** Provide your own Hindi reference audio in `prompts/` directory for personalized TTS voice

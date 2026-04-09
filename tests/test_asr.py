@@ -5,8 +5,8 @@ Uses the locally installed LibriSpeech dev-clean dataset to evaluate
 faster-whisper transcription accuracy (Word Error Rate) and per-sample latency.
 
 Dataset layout expected at:
-    dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<utterance>.flac
-    dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<spk>-<ch>.trans.txt
+    data/dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<utterance>.flac
+    data/dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<spk>-<ch>.trans.txt
 
 Transcript format (LibriSpeech standard):
     <utterance_id> UPPERCASE REFERENCE TEXT WITHOUT PUNCTUATION
@@ -127,7 +127,7 @@ def librispeech_available():
     if not LIBRISPEECH_ROOT.exists():
         pytest.skip(
             f"LibriSpeech dev-clean not found at {LIBRISPEECH_ROOT}. "
-            "Download with: bash scripts/download_librispeech.sh"
+            "Download and extract the dataset under data/dev-clean/ at the repo root."
         )
     missing = []
     for pkg in ("soundfile", "jiwer"):
