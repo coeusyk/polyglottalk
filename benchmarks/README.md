@@ -26,15 +26,15 @@ Required by `benchmark_asr.py`, `benchmark_e2e.py`, and `benchmark_context.py`.
 
 ```bash
 wget https://openslr.trmal.net/resources/12/dev-clean.tar.gz
-tar -xzf dev-clean.tar.gz
+mkdir -p ../data && tar -xzf dev-clean.tar.gz -C ../data
 rm dev-clean.tar.gz
 ```
 
-Extracts to `dev-clean/LibriSpeech/dev-clean/` in the project root (~350 MB, 2 703 utterances).
+Extracts to `data/dev-clean/LibriSpeech/dev-clean/` in the project root (~350 MB, 2 703 utterances).
 
 ### 4. Prepare MT test sentences
 
-Required by `benchmark_mt.py`. The file `test_sentences/sentences.txt` is already included in the repo (25 English–Hindi pairs, `|`-separated).
+Required by `benchmark_mt.py`. The file `data/test_sentences/sentences.txt` is already included in the repo (25 English–Hindi pairs, `|`-separated).
 
 ---
 

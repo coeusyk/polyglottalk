@@ -5,8 +5,8 @@ Uses the locally installed LibriSpeech dev-clean dataset to evaluate
 faster-whisper transcription accuracy (Word Error Rate) and per-sample latency.
 
 Dataset layout expected at:
-    dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<utterance>.flac
-    dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<spk>-<ch>.trans.txt
+    data/dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<utterance>.flac
+    data/dev-clean/LibriSpeech/dev-clean/<speaker>/<chapter>/<spk>-<ch>.trans.txt
 
 Transcript format (LibriSpeech standard):
     <utterance_id> UPPERCASE REFERENCE TEXT WITHOUT PUNCTUATION
@@ -36,14 +36,14 @@ from typing import Iterator
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import config  # noqa: F401 — must set os.environ before faster_whisper import
+from polyglot_talk import config  # noqa: F401 — must set os.environ before faster_whisper import
 
 import numpy as np
 import pytest
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).parent.parent
-LIBRISPEECH_ROOT = _REPO_ROOT / "dev-clean" / "LibriSpeech" / "dev-clean"
+LIBRISPEECH_ROOT = _REPO_ROOT / "data" / "dev-clean" / "LibriSpeech" / "dev-clean"
 BENCHMARKS_DIR = _REPO_ROOT / "benchmarks"
 RESULTS_CSV = BENCHMARKS_DIR / "asr_wer_results.csv"
 
@@ -127,7 +127,7 @@ def librispeech_available():
     if not LIBRISPEECH_ROOT.exists():
         pytest.skip(
             f"LibriSpeech dev-clean not found at {LIBRISPEECH_ROOT}. "
-            "Download with: bash scripts/download_librispeech.sh"
+            "Download and extract the dataset under data/dev-clean/ at the repo root."
         )
     missing = []
     for pkg in ("soundfile", "jiwer"):
@@ -158,7 +158,7 @@ def test_transcribe_silence(asr_model) -> None:
 
 def test_asr_engine_integration() -> None:
     """ASREngine._transcribe() returns a str on silent input without error."""
-    from asr_engine import ASREngine
+    from polyglot_talk.asr_engine import ASREngine
 
     engine = ASREngine(
         audio_queue=queue.Queue(),

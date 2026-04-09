@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import config  # noqa: F401
+from polyglot_talk import config  # noqa: F401
 import pytest
 
 
@@ -54,7 +54,7 @@ def make_translator():
             # Default: echo "[tgt] {text}"
             mock_tr.side_effect = lambda text, src, tgt: f"[{tgt}] {text}"
 
-        from translator import Translator
+        from polyglot_talk.translator import Translator
 
         t = Translator(
             text_queue=queue.Queue(),
@@ -174,7 +174,7 @@ def test_trim_prefix_exact() -> None:
         fake.from_code = "en"
         fake.to_code = "hi"
         mp.return_value = [fake]
-        from translator import Translator
+        from polyglot_talk.translator import Translator
         t = Translator(queue.Queue(), queue.Queue(), threading.Event())
 
     result = t._trim_prefix("नमस्ते कैसे हैं", "नमस्ते")
@@ -195,7 +195,7 @@ def test_trim_prefix_no_match_returns_full() -> None:
         fake.from_code = "en"
         fake.to_code = "hi"
         mp.return_value = [fake]
-        from translator import Translator
+        from polyglot_talk.translator import Translator
         t = Translator(queue.Queue(), queue.Queue(), threading.Event())
 
     result = t._trim_prefix("completely different text", "XYZ ABC DEF")
@@ -209,7 +209,7 @@ def test_empty_text_skipped(make_translator) -> None:
 
     mock_tr.side_effect = lambda text, src, tgt: "some translation"
 
-    from models import TextSegment
+    from polyglot_talk.models import TextSegment
     import queue
 
     text_q = queue.Queue()
@@ -227,7 +227,7 @@ def test_empty_text_skipped(make_translator) -> None:
         mp.return_value = [fake]
         mtr.return_value = "translation"
 
-        from translator import Translator
+        from polyglot_talk.translator import Translator
         t = Translator(text_q, tts_q, stop)
 
         text_q.put(TextSegment(chunk_id=0, text="   "))  # whitespace — should skip
@@ -238,7 +238,7 @@ def test_empty_text_skipped(make_translator) -> None:
     # Translator propagates a shutdown sentinel (None) to tts_queue so that
     # downstream TTSEngine can exit cleanly.  We drain it here and confirm
     # that no real TranslatedSegment was enqueued for the whitespace input.
-    from models import TranslatedSegment
+    from polyglot_talk.models import TranslatedSegment
     items = []
     while not tts_q.empty():
         items.append(tts_q.get_nowait())

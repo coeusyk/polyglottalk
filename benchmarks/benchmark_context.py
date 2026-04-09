@@ -35,7 +35,7 @@ from typing import Deque
 
 # Project root on path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import config  # noqa: E402
+from polyglot_talk import config  # noqa: E402
 
 import argostranslate.package  # noqa: E402
 import argostranslate.translate  # noqa: E402
@@ -45,7 +45,7 @@ import system_meta  # noqa: E402
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
-LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-clean")
+LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "data", "dev-clean", "LibriSpeech", "dev-clean")
 # Number of consecutive sentences drawn from one chapter for context testing
 CONTEXT_CLIP_COUNT: int = 10
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "context")

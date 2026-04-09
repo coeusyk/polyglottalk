@@ -27,7 +27,7 @@ Usage
 from __future__ import annotations
 
 # config MUST be imported first — sets OMP_NUM_THREADS / CT2_INTER_THREADS
-import config  # noqa: F401
+from polyglot_talk import config  # noqa: F401
 
 import argparse
 import sys

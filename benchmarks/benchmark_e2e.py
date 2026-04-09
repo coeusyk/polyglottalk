@@ -22,7 +22,7 @@ import time
 
 # Project root on path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import config  # noqa: E402
+from polyglot_talk import config  # noqa: E402
 
 import numpy as np  # noqa: E402
 
@@ -31,7 +31,7 @@ import system_meta  # noqa: E402
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
-LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "dev-clean", "LibriSpeech", "dev-clean")
+LIBRISPEECH_DIR = os.path.join(PROJECT_ROOT, "data", "dev-clean", "LibriSpeech", "dev-clean")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "e2e")
 # Output CSV paths are computed per-machine inside run_benchmark().
 

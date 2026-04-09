@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import config  # noqa: F401
+from polyglot_talk import config  # noqa: F401
 
 import pytest
 
@@ -82,8 +82,8 @@ def test_mms_tts_synthesises_wav(tmp_path: Path) -> None:
 def test_tts_engine_class(tmp_path: Path) -> None:
     """TTSEngine.run() must synthesise one segment and exit on sentinel."""
     import queue as _queue  # noqa: PLC0415
-    from tts_engine import TTSEngine  # noqa: PLC0415
-    from models import TranslatedSegment  # noqa: PLC0415
+    from polyglot_talk.tts_engine import TTSEngine  # noqa: PLC0415
+    from polyglot_talk.models import TranslatedSegment  # noqa: PLC0415
 
     results: dict[str, object] = {}
 

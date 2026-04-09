@@ -20,11 +20,11 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-import config  # sets os.environ first
+from polyglot_talk import config  # sets os.environ first
 import numpy as np
 import sounddevice as sd
-from audio_capture import AudioCapture
-from models import AudioChunk
+from polyglot_talk.audio_capture import AudioCapture
+from polyglot_talk.models import AudioChunk
 
 RECORD_SECONDS = 5          # Record this many seconds
 OUTPUT_WAV = "tests/test_output.wav"
