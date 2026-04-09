@@ -6,6 +6,6 @@ __pycache__/
 *.pyd
 
 .pytest_cache/
-data/dev-clean
+dev-clean
 output/
 prompts
