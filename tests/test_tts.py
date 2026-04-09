@@ -126,5 +126,14 @@ def test_tts_engine_class(tmp_path: Path) -> None:
     print(f"✓ test_tts_engine_class passed  (output={out_wav})")
 
 
+def test_model_map_completeness() -> None:
+    """MMS_TTS_MODEL_MAP must have ≥6 entries; every key must be in ARGOS_LANG_MAP."""
+    assert len(config.MMS_TTS_MODEL_MAP) >= 6
+    for lang_code in config.MMS_TTS_MODEL_MAP:
+        assert lang_code in config.ARGOS_LANG_MAP, (
+            f"MMS_TTS_MODEL_MAP key {lang_code!r} missing from ARGOS_LANG_MAP"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

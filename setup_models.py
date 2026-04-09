@@ -9,14 +9,14 @@ What it downloads
 1. faster-whisper base.en (int8) — ~150 MB
    Cached to:  ~/.cache/huggingface/hub/  (or WHISPER_MODELS_DIR)
 
-2. Argos Translate en→hi language pack — ~100 MB
+2. Argos Translate language packs for all languages in ARGOS_LANG_MAP — ~100 MB each
    Installed to:  ~/.local/share/argos-translate/packages/  (Linux)
                   %LOCALAPPDATA%\\argos-translate\\packages\\  (Windows)
 
-3. Facebook MMS-TTS Hindi model — ~150 MB
-   Cached to:  ~/.cache/huggingface/hub/models--facebook--mms-tts-hin/
+3. Facebook MMS-TTS model for TARGET_LANG — ~150 MB
+   Cached to:  ~/.cache/huggingface/hub/models--facebook--mms-tts-{lang}/
 
-Total:  ~400-500 MB depending on cached HuggingFace files.
+Total:  ~400-650 MB depending on cached HuggingFace files and language selection.
 
 Usage
 -----
@@ -88,54 +88,55 @@ def verify_asr_model(model) -> None:
 # ── Step 2: Argos Translate ──────────────────────────────────────────────────
 
 def download_translation_model() -> None:
-    print("\n[2/3] Downloading Argos Translate language pack…")
-    _info(f"Language pair: {config.SOURCE_LANG} → {config.TARGET_LANG}")
+    print("\n[2/3] Downloading Argos Translate language packs…")
 
     import argostranslate.package
 
-    # Check whether the package is already installed
-    installed = argostranslate.package.get_installed_packages()
-    already = any(
-        p.from_code == config.SOURCE_LANG and p.to_code == config.TARGET_LANG
-        for p in installed
-    )
-    if already:
-        _ok(f"Argos package {config.SOURCE_LANG}→{config.TARGET_LANG} already installed.")
-        return
-
     _info("Fetching package index (requires internet)…")
     argostranslate.package.update_package_index()
-
     available = argostranslate.package.get_available_packages()
-    pkg = next(
-        (
-            p
-            for p in available
-            if p.from_code == config.SOURCE_LANG and p.to_code == config.TARGET_LANG
-        ),
-        None,
-    )
-    if pkg is None:
-        _fail(
-            f"No Argos package found for {config.SOURCE_LANG}→{config.TARGET_LANG}. "
-            f"Check https://www.argosopentech.com/argospm/index/ for available pairs."
-        )
-        sys.exit(1)
 
-    _info(f"Downloading {pkg.from_name} → {pkg.to_name} (version {pkg.package_version})…")
-    t0 = time.perf_counter()
-    download_path = pkg.download()
-    argostranslate.package.install_from_path(download_path)
-    elapsed = time.perf_counter() - t0
-    _ok(f"Argos package installed in {elapsed:.1f}s  →  {download_path}")
+    for argos_code in config.ARGOS_LANG_MAP.values():
+        pair_label = f"{config.SOURCE_LANG}→{argos_code}"
+        installed = argostranslate.package.get_installed_packages()
+        already = any(
+            p.from_code == config.SOURCE_LANG and p.to_code == argos_code
+            for p in installed
+        )
+        if already:
+            _ok(f"Argos package {pair_label} already installed — skipping.")
+            continue
+
+        pkg = next(
+            (
+                p
+                for p in available
+                if p.from_code == config.SOURCE_LANG and p.to_code == argos_code
+            ),
+            None,
+        )
+        if pkg is None:
+            _fail(
+                f"No Argos package found for {pair_label}. "
+                f"Check https://www.argosopentech.com/argospm/index/ for available pairs."
+            )
+            sys.exit(1)
+
+        _info(f"Downloading {pkg.from_name} → {pkg.to_name} (version {pkg.package_version})…")
+        t0 = time.perf_counter()
+        download_path = pkg.download()
+        argostranslate.package.install_from_path(download_path)
+        elapsed = time.perf_counter() - t0
+        _ok(f"Argos package {pair_label} installed in {elapsed:.1f}s  →  {download_path}")
 
 
 def verify_translation_model() -> None:
     _info('Smoke-testing translation model ("Hello")…')
     import argostranslate.translate
 
+    argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
     result = argostranslate.translate.translate(
-        "Hello", config.SOURCE_LANG, config.TARGET_LANG
+        "Hello", config.SOURCE_LANG, argos_target
     )
     if not result or not result.strip():
         _fail("Translation smoke test failed — empty output!")
@@ -148,7 +149,8 @@ def verify_translation_model() -> None:
 def download_tts_model() -> None:
     """Download MMS-TTS model weights to the HuggingFace cache."""
     print("\n[3/3] Downloading Facebook MMS-TTS model…")
-    _info(f"Model: {config.MMS_TTS_MODEL_ID}  device: {config.MMS_TTS_DEVICE}")
+    model_id = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
+    _info(f"Model: {model_id}  device: {config.MMS_TTS_DEVICE}")
 
     from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
@@ -156,8 +158,8 @@ def download_tts_model() -> None:
     # Pre-download + verify by loading tokenizer and model weights.
     # The model is not moved to the target device here — that happens
     # lazily in TTSEngine.run() on the dedicated TTS thread.
-    _tokenizer = VitsTokenizer.from_pretrained(config.MMS_TTS_MODEL_ID)
-    _model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
+    _tokenizer = VitsTokenizer.from_pretrained(model_id)
+    _model = VitsModel.from_pretrained(model_id)
     elapsed = time.perf_counter() - t0
     del _tokenizer, _model  # free memory — just needed for cache warm-up
     _ok(f"MMS-TTS model downloaded/verified in {elapsed:.1f}s")

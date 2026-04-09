@@ -55,7 +55,12 @@ class Translator:
         self._tts_queue = tts_queue
         self._stop_event = stop_event
         self._source_lang = source_lang
+        # _target_lang is the ISO 639-3 code used for display (e.g. "hin").
+        # Argos Translate requires ISO 639-1 (e.g. "hi"); resolve via map.
         self._target_lang = target_lang
+        self._argos_target_lang: str = config.ARGOS_LANG_MAP.get(
+            target_lang, target_lang
+        )
 
         self._context_source: Deque[str] = collections.deque(
             maxlen=context_maxlen
@@ -210,7 +215,7 @@ class Translator:
     def _translate(self, text: str) -> str:
         """Call Argos Translate for the given text."""
         return argostranslate.translate.translate(
-            text, self._source_lang, self._target_lang
+            text, self._source_lang, self._argos_target_lang
         )
 
 
@@ -225,17 +230,17 @@ class Translator:
         """
         installed = argostranslate.package.get_installed_packages()
         found = any(
-            p.from_code == self._source_lang and p.to_code == self._target_lang
+            p.from_code == self._source_lang and p.to_code == self._argos_target_lang
             for p in installed
         )
         if not found:
             raise RuntimeError(
                 f"Argos Translate package not found for "
-                f"{self._source_lang!r} → {self._target_lang!r}. "
+                f"{self._source_lang!r} → {self._argos_target_lang!r}. "
                 f"Run 'python setup_models.py' first to download models."
             )
         logger.debug(
-            "Argos package %s→%s verified.", self._source_lang, self._target_lang
+            "Argos package %s→%s verified.", self._source_lang, self._argos_target_lang
         )
 
     # ── Queue helper ────────────────────────────────────────────────────────

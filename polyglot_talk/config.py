@@ -69,18 +69,59 @@ ASR_LANGUAGE: str = "en"          # skip language-detection for speed
 # complete sentence, which degrades translation quality and prosody.
 ASR_STRIP_TRAILING_PERIOD: bool = True
 
+# ── Language codes — IMPORTANT: two different namespaces are in use ────────────
+# MMS-TTS uses ISO 639-3 (three-letter):  "hin", "tam", "tel", "kan", "ben", …
+# Argos Translate uses ISO 639-1 (two-letter): "hi", "ta", "te", "kn", "bn", …
+# These are DIFFERENT and must NOT be mixed.  ARGOS_LANG_MAP bridges them.
+# TARGET_LANG is always the ISO 639-3 key used by MMS-TTS.
+# SOURCE_LANG stays ISO 639-1 ("en") because Argos and Whisper both use it.
+
 # ── Translation (Argos Translate) ────────────────────────────────────────────
-SOURCE_LANG: str = "en"
-TARGET_LANG: str = "hi"
+SOURCE_LANG: str = "en"       # ISO 639-1 — shared by Whisper ASR and Argos MT
+
+# Active output language.  Must be a key in both MMS_TTS_MODEL_MAP and
+# ARGOS_LANG_MAP.  Changing only this constant switches the full pipeline.
+TARGET_LANG: str = "hin"           # ISO 639-3 — used by MMS-TTS model IDs
+
+# ISO 639-3 → ISO 639-1 bridge for Argos Translate.
+# Argos uses two-letter codes; MMS-TTS uses three-letter codes.
+# Add a new entry here whenever a new language is added to MMS_TTS_MODEL_MAP.
+ARGOS_LANG_MAP: dict[str, str] = {
+    "hin": "hi",   # Hindi
+    "tam": "ta",   # Tamil
+    "tel": "te",   # Telugu
+    "kan": "kn",   # Kannada
+    "ben": "bn",   # Bengali
+    "mal": "ml",   # Malayalam
+    "mar": "mr",   # Marathi
+    "guj": "gu",   # Gujarati
+}
+
 CONTEXT_MAXLEN: int = 2           # rolling source-segment window for prefix
 
 # ── TTS (Facebook MMS-TTS, VITS-based) ──────────────────────────────────────
 TTS_OUTPUT_DIR: str = "output"          # directory for saved TTS WAV files
 
-# Per-language MMS-TTS checkpoint.  Each language has its own weights;
-# there is no generic multi-language checkpoint.  Change this value
-# (e.g. "facebook/mms-tts-eng") together with TARGET_LANG.
-MMS_TTS_MODEL_ID: str = "facebook/mms-tts-hin"  # Hindi
+# MMS-TTS model routing: maps TARGET_LANG (ISO 639-3) → HuggingFace checkpoint.
+# Each language has its own VITS weights; all use the same VitsModel interface.
+# To add a new language: add one entry here AND one entry in ARGOS_LANG_MAP.
+# No other file needs to change.
+MMS_TTS_MODEL_MAP: dict[str, str] = {
+    "hin": "facebook/mms-tts-hin",   # Hindi
+    "tam": "facebook/mms-tts-tam",   # Tamil
+    "tel": "facebook/mms-tts-tel",   # Telugu
+    "kan": "facebook/mms-tts-kan",   # Kannada
+    "ben": "facebook/mms-tts-ben",   # Bengali
+    "mal": "facebook/mms-tts-mal",   # Malayalam
+    "mar": "facebook/mms-tts-mar",   # Marathi
+    "guj": "facebook/mms-tts-guj",   # Gujarati
+}
+
+# Validate TARGET_LANG at import time — fail fast rather than deep in a thread.
+assert TARGET_LANG in MMS_TTS_MODEL_MAP, (
+    f"TARGET_LANG={TARGET_LANG!r} has no MMS-TTS checkpoint. "
+    f"Valid values: {sorted(MMS_TTS_MODEL_MAP)}"
+)
 
 # Device for MMS-TTS inference.  "auto" → cuda if available, else cpu.
 # Set to "cpu" explicitly to force CPU-only mode.
