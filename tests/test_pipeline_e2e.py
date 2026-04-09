@@ -104,13 +104,14 @@ def check_models_installed():
     import argostranslate.package
 
     installed = argostranslate.package.get_installed_packages()
+    argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
     found = any(
-        p.from_code == config.SOURCE_LANG and p.to_code == config.TARGET_LANG
+        p.from_code == config.SOURCE_LANG and p.to_code == argos_target
         for p in installed
     )
     if not found:
         pytest.skip(
-            f"Argos {config.SOURCE_LANG}→{config.TARGET_LANG} not installed. "
+            f"Argos {config.SOURCE_LANG}→{argos_target} not installed. "
             "Run python setup_models.py."
         )
 

@@ -415,13 +415,16 @@ class ASREngine:
         The generator returned by model.transcribe() MUST be fully consumed
         before the next call — partial iteration can corrupt CTranslate2 state.
         """
-        segments_gen, _info = self.model.transcribe(
+        result = self.model.transcribe(
             audio,
             beam_size=self._beam_size,
             language=config.ASR_LANGUAGE,
             vad_filter=False,
             condition_on_previous_text=False,
         )
+        # faster-whisper normally returns ``(segments, info)``, but some
+        # edge cases can yield just the segments iterable. Normalize both.
+        segments_gen = result[0] if isinstance(result, tuple) else result
         # Drain the generator completely
         text = "".join(seg.text for seg in segments_gen).strip()
         return text

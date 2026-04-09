@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from polyglot_talk import config  # noqa: F401
 import pytest
 
+_ARGOS_TARGET = config.ARGOS_LANG_MAP[config.TARGET_LANG]
+
 
 # ── Fixture: a Translator wired to mocked argostranslate ─────────────────────
 
@@ -45,7 +47,7 @@ def make_translator():
         # Simulate package installed
         fake_pkg = MagicMock()
         fake_pkg.from_code = config.SOURCE_LANG
-        fake_pkg.to_code = config.TARGET_LANG
+        fake_pkg.to_code = _ARGOS_TARGET
         mock_pkg.return_value = [fake_pkg]
 
         if translate_side_effect is not None:
@@ -81,7 +83,7 @@ def test_empty_context_no_prefix(make_translator) -> None:
 
     result = translator._translate_with_context("Hello world")
 
-    mock_tr.assert_called_once_with("Hello world", config.SOURCE_LANG, config.TARGET_LANG)
+    mock_tr.assert_called_once_with("Hello world", config.SOURCE_LANG, _ARGOS_TARGET)
     assert "Hello world" in result
     print(f"✓ empty context: {result!r}")
 
@@ -172,7 +174,7 @@ def test_trim_prefix_exact() -> None:
          patch("argostranslate.translate.translate"):
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         from polyglot_talk.translator import Translator
         t = Translator(queue.Queue(), queue.Queue(), threading.Event())
@@ -193,7 +195,7 @@ def test_trim_prefix_no_match_returns_full() -> None:
          patch("argostranslate.translate.translate"):
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         from polyglot_talk.translator import Translator
         t = Translator(queue.Queue(), queue.Queue(), threading.Event())
@@ -223,7 +225,7 @@ def test_empty_text_skipped(make_translator) -> None:
          patch("argostranslate.translate.translate") as mtr:
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         mtr.return_value = "translation"
 
