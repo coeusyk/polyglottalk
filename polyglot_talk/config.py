@@ -39,16 +39,7 @@ RMS_SILENCE_THRESHOLD: float = 0.0001  # chunks below this RMS are dropped
 
 # ── Sentence accumulation ───────────────────────────────────────────────────
 # ASR fragments are buffered until a natural sentence boundary is detected.
-# This ensures the translator and TTS receive complete sentences rather than
-# mid-word fragments with artificial trailing periods.
-#
-# SENTENCE_BUFFER_TIMEOUT must be larger than the natural gap between consecutive
-# ASR text outputs on CPU:
-#   gap = STRIDE_SAMPLES/SAMPLE_RATE + whisper_transcription_time
-#       = (CHUNK_DURATION - CHUNK_OVERLAP) + CHUNK_DURATION * ~0.8
-#       ≈ 1.5s + 2.0s = 3.5s on CPU base.en int8
-# We add a generous safety margin so brief speech pauses do NOT cause premature
-# flushes.  The silence-based flush (RMS filter) handles genuine sentence ends.
+# This reduces the number of MT calls and produces better TTS prosody.
 SENTENCE_BUFFER_TIMEOUT: float = 5.0   # flush after this many seconds of no new text
 SENTENCE_BUFFER_MAXWORDS: int = 25     # force-flush when buffer exceeds this many words
 
@@ -64,38 +55,49 @@ ASR_DEVICE: str = "auto"
 ASR_BEAM_SIZE: int = 1
 ASR_LANGUAGE: str = "en"          # skip language-detection for speed
 
-# Strip trailing periods that Whisper auto-appends to every chunk.
-# This prevents the translator / TTS from treating every fragment as a
-# complete sentence, which degrades translation quality and prosody.
 ASR_STRIP_TRAILING_PERIOD: bool = True
 
-# ── Language codes — IMPORTANT: two different namespaces are in use ────────────
+# ── Language codes — IMPORTANT: two different namespaces are in use ─────────
 # MMS-TTS uses ISO 639-3 (three-letter):  "hin", "tam", "tel", "kan", "ben", …
-# Argos Translate uses ISO 639-1 (two-letter): "hi", "ta", "te", "kn", "bn", …
-# These are DIFFERENT and must NOT be mixed.  ARGOS_LANG_MAP bridges them.
+# Argos Translate uses ISO 639-1 (two-letter): "hi" only (for Indian langs)
+# MarianMT (Helsinki-NLP) uses ISO 639-1 (two-letter): "ta", "te", "kn", …
 # TARGET_LANG is always the ISO 639-3 key used by MMS-TTS.
-# SOURCE_LANG stays ISO 639-1 ("en") because Argos and Whisper both use it.
+# SOURCE_LANG stays ISO 639-1 ("en") because Argos, MarianMT, and Whisper
+# all use it for the source side.
 
-# ── Translation (Argos Translate) ────────────────────────────────────────────
-SOURCE_LANG: str = "en"       # ISO 639-1 — shared by Whisper ASR and Argos MT
+# ── Translation backend routing ─────────────────────────────────────────────
+SOURCE_LANG: str = "en"       # ISO 639-1 — shared by Whisper ASR and all MT backends
 
 # Active output language.  Must be a key in both MMS_TTS_MODEL_MAP and
-# ARGOS_LANG_MAP.  Changing only this constant switches the full pipeline.
-TARGET_LANG: str = "hin"           # ISO 639-3 — used by MMS-TTS model IDs
+# ARGOS_LANG_MAP or MARIANMT_MODEL_MAP.  Changing only this constant
+# switches the full pipeline (ASR → MT → TTS).
+TARGET_LANG: str = "hin"      # ISO 639-3 — used as primary language key
 
-# ISO 639-3 → ISO 639-1 bridge for Argos Translate.
-# Argos uses two-letter codes; MMS-TTS uses three-letter codes.
-# Add a new entry here whenever a new language is added to MMS_TTS_MODEL_MAP.
+# Languages for which Argos Translate publishes an en→xx offline package.
+# As of 2025, only Hindi is available for Indian languages via argospm.
+# All others fall through to MarianMT.
+ARGOS_SUPPORTED_LANGS: frozenset[str] = frozenset({"hin"})
+
+# ISO 639-3 → ISO 639-1 bridge for Argos Translate (Hindi only).
 ARGOS_LANG_MAP: dict[str, str] = {
-    "hin": "hi",   # Hindi
-    "tam": "ta",   # Tamil
-    "tel": "te",   # Telugu
-    "kan": "kn",   # Kannada
-    "ben": "bn",   # Bengali
-    "mal": "ml",   # Malayalam
-    "mar": "mr",   # Marathi
-    "guj": "gu",   # Gujarati
+    "hin": "hi",   # Hindi — only Indian language with an Argos en→xx package
 }
+
+# ISO 639-3 → HuggingFace MarianMT checkpoint for all non-Hindi Indian langs.
+# Helsinki-NLP opus-mt models are offline, ~300 MB each, load via transformers.
+MARIANMT_MODEL_MAP: dict[str, str] = {
+    "tam": "Helsinki-NLP/opus-mt-en-ta",   # Tamil
+    "tel": "Helsinki-NLP/opus-mt-en-te",   # Telugu
+    "kan": "Helsinki-NLP/opus-mt-en-kn",   # Kannada
+    "ben": "Helsinki-NLP/opus-mt-en-bn",   # Bengali
+    "mal": "Helsinki-NLP/opus-mt-en-ml",   # Malayalam
+    "mar": "Helsinki-NLP/opus-mt-en-mr",   # Marathi
+    "guj": "Helsinki-NLP/opus-mt-en-gu",   # Gujarati
+}
+
+# MT_BACKEND is derived automatically from TARGET_LANG — do not set manually.
+# Values: "argos" | "marian"
+MT_BACKEND: str = "argos" if TARGET_LANG in ARGOS_SUPPORTED_LANGS else "marian"
 
 CONTEXT_MAXLEN: int = 2           # rolling source-segment window for prefix
 
@@ -104,8 +106,8 @@ TTS_OUTPUT_DIR: str = "output"          # directory for saved TTS WAV files
 
 # MMS-TTS model routing: maps TARGET_LANG (ISO 639-3) → HuggingFace checkpoint.
 # Each language has its own VITS weights; all use the same VitsModel interface.
-# To add a new language: add one entry here AND one entry in ARGOS_LANG_MAP.
-# No other file needs to change.
+# To add a new language: add one entry here AND one entry in either
+# ARGOS_LANG_MAP (if Argos supports it) or MARIANMT_MODEL_MAP (otherwise).
 MMS_TTS_MODEL_MAP: dict[str, str] = {
     "hin": "facebook/mms-tts-hin",   # Hindi
     "tam": "facebook/mms-tts-tam",   # Tamil
@@ -123,8 +125,14 @@ assert TARGET_LANG in MMS_TTS_MODEL_MAP, (
     f"Valid values: {sorted(MMS_TTS_MODEL_MAP)}"
 )
 
+# Every language must have either an Argos or a MarianMT entry — never neither.
+_ALL_MT_LANGS = set(ARGOS_LANG_MAP) | set(MARIANMT_MODEL_MAP)
+assert set(MMS_TTS_MODEL_MAP).issubset(_ALL_MT_LANGS), (
+    f"These TTS languages have no MT backend: "
+    f"{set(MMS_TTS_MODEL_MAP) - _ALL_MT_LANGS}"
+)
+
 # Device for MMS-TTS inference.  "auto" → cuda if available, else cpu.
-# Set to "cpu" explicitly to force CPU-only mode.
 MMS_TTS_DEVICE: str = "auto"
 
 # ── Logging ─────────────────────────────────────────────────────────────────
@@ -132,8 +140,6 @@ LOG_FORMAT: str = "[%(asctime)s %(threadName)s] %(levelname)s %(message)s"
 LOG_LEVEL: str = "INFO"
 
 # ── ASR hallucination blocklist ──────────────────────────────────────────────
-# faster-whisper commonly outputs these phrases on silence or near-silence.
-# Comparisons are case-insensitive and strip punctuation/whitespace.
 ASR_HALLUCINATION_BLOCKLIST: frozenset = frozenset({
     "thank you",
     "thanks",

@@ -1,5 +1,14 @@
 """
-translator.py — Machine-translation thread using Argos Translate.
+translator.py — Machine-translation thread with backend dispatch.
+
+Backend selection
+-----------------
+Argos Translate is used for Hindi (the only Indian language for which
+an offline Argos en→xx package is published on argospm).
+
+Helsinki-NLP MarianMT (via HuggingFace transformers) is used for all
+other Indian languages.  Both backends are loaded ONCE in __init__;
+run() never imports or loads anything.
 
 Context continuity
 ------------------
@@ -9,8 +18,10 @@ to the new text so the model sees sentence-boundary context.  After
 translation the re-translated prefix is trimmed from the output (exact
 match first, fuzzy difflib fallback).
 
-The Argos model is loaded ONCE in __init__; run() never imports or loads
-anything.
+The backend-specific objects are stored as self._argos_translate_fn or
+self._marian_pipeline; _translate() dispatches to whichever is active.
+Everything else (context window, prefix trim, queue discipline) is
+identical regardless of backend.
 """
 
 from __future__ import annotations
@@ -21,10 +32,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Deque
-
-import argostranslate.package
-import argostranslate.translate
+from typing import Any, Callable, Deque
 
 from . import config
 from .models import TextSegment, TranslatedSegment
@@ -37,9 +45,8 @@ class Translator:
 
     Context continuity
     ------------------
-    self._context_source  — deque[str], last N source-text segments
-    self._cache_key       — the prefix string whose translation is cached
-    self._cache_val       — cached translation of that prefix string
+    self._context_source      — deque[str], last N source-text segments
+    self._context_translated  — deque[str], last N translated segments
     """
 
     def __init__(
@@ -55,24 +62,20 @@ class Translator:
         self._tts_queue = tts_queue
         self._stop_event = stop_event
         self._source_lang = source_lang
-        # _target_lang is the ISO 639-3 code used for display (e.g. "hin").
-        # Argos Translate requires ISO 639-1 (e.g. "hi"); resolve via map.
+        # _target_lang is the ISO 639-3 code used for display (e.g. "hin", "tam").
         self._target_lang = target_lang
-        self._argos_target_lang: str = config.ARGOS_LANG_MAP.get(
-            target_lang, target_lang
-        )
+        self._mt_backend: str = config.MT_BACKEND  # "argos" | "marian"
 
-        self._context_source: Deque[str] = collections.deque(
-            maxlen=context_maxlen
-        )
-        # Stores the actual translated output for each context segment so
-        # prefix_translated is read from history instead of re-translating.
-        self._context_translated: Deque[str] = collections.deque(
-            maxlen=context_maxlen
-        )
+        self._context_source: Deque[str] = collections.deque(maxlen=context_maxlen)
+        self._context_translated: Deque[str] = collections.deque(maxlen=context_maxlen)
+
+        # Backend-specific objects — set by _load_model()
+        self._argos_translate_fn: Callable[[str], str] | None = None
+        self._marian_pipeline: Any | None = None
 
         logger.info(
-            "Loading translation model (%s → %s)…", source_lang, target_lang
+            "Loading translation model (%s → %s) via %s…",
+            source_lang, target_lang, self._mt_backend,
         )
         t0 = time.perf_counter()
         self._load_model()
@@ -89,7 +92,6 @@ class Translator:
                 continue
 
             if item is None:  # shutdown sentinel
-                # Propagate sentinel downstream so TTSEngine exits cleanly
                 try:
                     self._tts_queue.put_nowait(None)
                 except queue.Full:
@@ -114,11 +116,8 @@ class Translator:
 
             logger.debug(
                 "Translation done (%.3fs) chunk #%d: %r",
-                elapsed,
-                item.chunk_id,
-                translated,
+                elapsed, item.chunk_id, translated,
             )
-            # Live console output — print immediately before queuing
             print(f"[\u2192{self._target_lang.upper()}  #{item.chunk_id:>4d}] {translated}", flush=True)
 
             segment = TranslatedSegment(
@@ -142,7 +141,7 @@ class Translator:
         2. Build ``prefix_translated`` from _context_translated deque
            (actual previous outputs — no extra translation call needed).
         3. Concatenate: ``combined_input = prefix_source + " " + new_text``.
-        4. Translate ``combined_input`` (ONE Argos call per segment).
+        4. Translate ``combined_input`` (ONE backend call per segment).
         5. Strip ``prefix_translated`` from start of full output
            (exact match first, fuzzy difflib fallback).
         6. Update both context deques.
@@ -151,19 +150,12 @@ class Translator:
         prefix_source = " ".join(self._context_source).strip()
         prefix_translated = " ".join(self._context_translated).strip()
 
-        if prefix_source:
-            combined_input = f"{prefix_source} {new_text}"
-        else:
-            combined_input = new_text
+        combined_input = f"{prefix_source} {new_text}" if prefix_source else new_text
 
         full_translation = self._translate(combined_input)
 
-        if prefix_translated:
-            trimmed = self._trim_prefix(full_translation, prefix_translated)
-        else:
-            trimmed = full_translation
+        trimmed = self._trim_prefix(full_translation, prefix_translated) if prefix_translated else full_translation
 
-        # Update rolling context AFTER translation (use source + output)
         self._context_source.append(new_text)
         result = trimmed.strip() if trimmed.strip() else full_translation.strip()
         self._context_translated.append(result)
@@ -179,16 +171,11 @@ class Translator:
         if not prefix_tr:
             return full
 
-        # ── Exact match ────────────────────────────────────────────────────
         if full.startswith(prefix_tr):
-            return full[len(prefix_tr) :].strip()
+            return full[len(prefix_tr):].strip()
 
-        # ── Fuzzy match via SequenceMatcher ───────────────────────────────
-        # Find the longest common prefix block at the start of both strings
         matcher = difflib.SequenceMatcher(None, full, prefix_tr, autojunk=False)
-        # opcodes: list of (tag, i1, i2, j1, j2)
-        # We look at the first block; if it's 'equal' and starts at 0, trim it.
-        blocks = matcher.get_matching_blocks()  # sorted by a
+        blocks = matcher.get_matching_blocks()
         trimmed_end = 0
         for block in blocks:
             if block.a == trimmed_end and block.b == 0:
@@ -200,48 +187,83 @@ class Translator:
         if trimmed_end > 0 and overlap_ratio >= 0.30:
             logger.debug(
                 "Fuzzy prefix trim: removed %d chars (%.0f%% overlap)",
-                trimmed_end,
-                overlap_ratio * 100,
+                trimmed_end, overlap_ratio * 100,
             )
             return full[trimmed_end:].strip()
 
-        logger.debug(
-            "Prefix trim skipped — overlap %.0f%% < 30%%", overlap_ratio * 100
-        )
+        logger.debug("Prefix trim skipped — overlap %.0f%% < 30%%", overlap_ratio * 100)
         return full
 
-    # ── Translation helpers ─────────────────────────────────────────────────
+    # ── Translation dispatch ────────────────────────────────────────────────
 
     def _translate(self, text: str) -> str:
-        """Call Argos Translate for the given text."""
-        return argostranslate.translate.translate(
-            text, self._source_lang, self._argos_target_lang
-        )
-
+        """Dispatch to the active MT backend (Argos or MarianMT)."""
+        if self._mt_backend == "argos":
+            assert self._argos_translate_fn is not None
+            return self._argos_translate_fn(text)
+        else:
+            assert self._marian_pipeline is not None
+            result = self._marian_pipeline(text)
+            # transformers pipeline returns list[dict] with key "translation_text"
+            return result[0]["translation_text"]
 
     def _load_model(self) -> None:
-        """Verify the Argos language package is installed.
+        """Load the appropriate MT backend based on config.MT_BACKEND.
+
+        Argos path
+        ----------
+        Verifies the installed Argos package for en→{argos_code} and
+        binds a closure over argostranslate.translate.translate.
+
+        MarianMT path
+        -------------
+        Loads Helsinki-NLP/opus-mt-en-{xx} via transformers pipeline.
+        The model is downloaded on first use; subsequent runs use the
+        HuggingFace cache (~/.cache/huggingface/hub/).
 
         Raises
         ------
         RuntimeError
-            If the required language package is not found.
-            Instructs the user to run setup_models.py first.
+            Argos path: if the required language package is not installed.
+            Run 'python setup_models.py' first.
         """
-        installed = argostranslate.package.get_installed_packages()
-        found = any(
-            p.from_code == self._source_lang and p.to_code == self._argos_target_lang
-            for p in installed
-        )
-        if not found:
-            raise RuntimeError(
-                f"Argos Translate package not found for "
-                f"{self._source_lang!r} → {self._argos_target_lang!r}. "
-                f"Run 'python setup_models.py' first to download models."
+        if self._mt_backend == "argos":
+            import argostranslate.package
+            import argostranslate.translate
+
+            argos_code = config.ARGOS_LANG_MAP[self._target_lang]
+            installed = argostranslate.package.get_installed_packages()
+            found = any(
+                p.from_code == self._source_lang and p.to_code == argos_code
+                for p in installed
             )
-        logger.debug(
-            "Argos package %s→%s verified.", self._source_lang, self._argos_target_lang
-        )
+            if not found:
+                raise RuntimeError(
+                    f"Argos Translate package not found for "
+                    f"{self._source_lang!r} → {argos_code!r}. "
+                    f"Run 'python setup_models.py' first."
+                )
+            # Capture the resolved codes in a closure so _translate() is simple.
+            src = self._source_lang
+            tgt = argos_code
+            self._argos_translate_fn = lambda text: argostranslate.translate.translate(text, src, tgt)
+            logger.debug("Argos backend ready: %s → %s", src, tgt)
+
+        else:  # marian
+            from transformers import pipeline as hf_pipeline
+
+            model_id = config.MARIANMT_MODEL_MAP[self._target_lang]
+            # device=0 → first CUDA GPU; device=-1 → CPU.
+            # "auto" is not accepted by the text2text-generation pipeline;
+            # resolve manually to match MMS_TTS_DEVICE behaviour.
+            import torch
+            device = 0 if torch.cuda.is_available() else -1
+            self._marian_pipeline = hf_pipeline(
+                "translation",
+                model=model_id,
+                device=device,
+            )
+            logger.debug("MarianMT backend ready: %s (device=%d)", model_id, device)
 
     # ── Queue helper ────────────────────────────────────────────────────────
 
@@ -258,14 +280,11 @@ class Translator:
                 dropped = self._tts_queue.get_nowait()
                 logger.warning(
                     "tts_queue full — evicted oldest chunk #%d to insert chunk #%d",
-                    dropped.chunk_id,
-                    segment.chunk_id,
+                    dropped.chunk_id, segment.chunk_id,
                 )
             except queue.Empty:
                 pass
             try:
                 self._tts_queue.put_nowait(segment)
             except queue.Full:
-                logger.warning(
-                    "tts_queue still full — dropping chunk #%d", segment.chunk_id
-                )
+                logger.warning("tts_queue still full — dropping chunk #%d", segment.chunk_id)
