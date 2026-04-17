@@ -39,6 +39,15 @@ from .models import AudioChunk
 logger = logging.getLogger(__name__)
 
 
+def _get_pause_event():
+    """Return the broadcaster's pause_event, or None if dashboard not active."""
+    try:
+        from dashboard_server import broadcaster  # noqa: PLC0415
+        return broadcaster.pause_event
+    except ImportError:
+        return None
+
+
 class AudioCapture:
     """Captures microphone audio in overlapping chunks.
 
@@ -127,6 +136,17 @@ class AudioCapture:
             )
 
             while not self._stop_event.is_set() and not self._audio_stop_event.is_set():
+                # ── Pause support ────────────────────────────────────────
+                pause_ev = _get_pause_event()
+                if pause_ev is not None and pause_ev.is_set():
+                    # Drain incoming mic data so buffer doesn't grow while paused
+                    try:
+                        self._raw_q.get_nowait()
+                    except queue.Empty:
+                        pass
+                    time.sleep(0.05)
+                    continue
+
                 # Drain one raw block from the callback queue
                 try:
                     block = self._raw_q.get(timeout=config.QUEUE_GET_TIMEOUT)

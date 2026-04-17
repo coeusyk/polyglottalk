@@ -51,6 +51,15 @@ from faster_whisper import WhisperModel  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+def _get_broadcaster():
+    """Lazy import so dashboard_server is only pulled in when --dashboard is used."""
+    try:
+        from dashboard_server import broadcaster  # noqa: PLC0415
+        return broadcaster
+    except ImportError:
+        return None
+
+
 class ASREngine:
     """Transcribes AudioChunk objects into TextSegment objects.
 
@@ -213,6 +222,9 @@ class ASREngine:
             )
             # Live console output
             print(f"[ASR   #{item.chunk_id:>4d}] {deduped_text}", flush=True)
+            _bc = _get_broadcaster()
+            if _bc is not None:
+                _bc.emit({"type": "asr_chunk", "chunk_id": item.chunk_id, "text": deduped_text})
 
             # ── Append to sentence buffer ──────────────────────────────────
             # Check timeout BEFORE adding new text: if the previous buffer
@@ -387,6 +399,9 @@ class ASREngine:
 
         logger.debug("Flushing sentence buffer → %r", sentence)
         print(f"[SENT  #{self._sentence_chunk_id:>4d}] {sentence}", flush=True)
+        _bc = _get_broadcaster()
+        if _bc is not None:
+            _bc.emit({"type": "sentence_flushed", "chunk_id": self._sentence_chunk_id, "text": sentence})
 
         segment = TextSegment(
             chunk_id=self._sentence_chunk_id,

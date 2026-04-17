@@ -3,8 +3,10 @@ main.py — Entry point for PolyglotTalk.
 
 Usage
 -----
-    python main.py
-    python main.py --source en --target hi
+    python main.py                          # CLI only, default language
+    python main.py --source en --target hin
+    python main.py --dashboard              # dashboard-only, start from UI
+    python main.py --dashboard --target hin # dashboard + auto-start pipeline
     python main.py --log-level DEBUG
 
 IMPORTANT: config is imported first so that OMP_NUM_THREADS and
@@ -20,6 +22,7 @@ from polyglot_talk import config  # noqa: F401 — sets os.environ before CT2 is
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 
@@ -36,15 +39,29 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--target",
-        default=config.TARGET_LANG,
+        default=None,          # None = let the dashboard UI decide
         metavar="LANG",
-        help=f"Target language code (default: {config.TARGET_LANG})",
+        help="Target language ISO 639-3 code. If omitted in --dashboard mode, "
+             "the pipeline is started from the UI.",
     )
     p.add_argument(
         "--log-level",
         default=config.LOG_LEVEL,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging verbosity",
+    )
+    p.add_argument(
+        "--dashboard",
+        action="store_true",
+        default=False,
+        help="Start the real-time WebSocket dashboard server",
+    )
+    p.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8765,
+        metavar="PORT",
+        help="Port for the dashboard WebSocket server (default: 8765)",
     )
     return p
 
@@ -58,9 +75,9 @@ def main() -> None:
         format=config.LOG_FORMAT,
         stream=sys.stdout,
     )
-    # Suppress faster-whisper's verbose "Processing audio with duration" messages
     logging.getLogger("faster_whisper").setLevel(logging.WARNING)
 
+    # ── Resolve device label for banner ───────────────────────────────────
     device = config.MMS_TTS_DEVICE
     if device == "auto":
         try:
@@ -69,31 +86,69 @@ def main() -> None:
         except ImportError:
             device = "cpu"
 
+    target_display = (args.target or config.TARGET_LANG).upper()
     print("=" * 60)
     print(" PolyglotTalk v0.1 — Offline Speech-to-Speech Translation")
-    print(f" {args.source.upper()} → {args.target.upper()}  |  TTS: MMS-TTS ({device})  |  No cloud APIs")
+    print(f" {args.source.upper()} → {target_display}  |  TTS: MMS-TTS ({device})  |  No cloud APIs")
     print(f" TTS output saved to: {config.TTS_OUTPUT_DIR}/chunk_NNNN.wav")
     print("=" * 60)
 
-    # ── Clean up old output chunks (only in root output dir, not subdirs) ──
-    # Note: glob("chunk_*.wav") only matches files directly in output_dir,
-    # not in subdirectories like e2e_benchmark/
+    # ── Clean up old output chunks ────────────────────────────────────────
     output_dir = Path(config.TTS_OUTPUT_DIR)
     if output_dir.exists():
         for wav_file in output_dir.glob("chunk_*.wav"):
             wav_file.unlink()
             logging.getLogger(__name__).debug("Removed old chunk: %s", wav_file.name)
 
-    # ── Import pipeline here so CT2 env vars are already set ─────────────
-    # (pipeline imports asr_engine / translator which import faster_whisper /
-    #  argostranslate — those must see OMP_NUM_THREADS from config.py)
+    # ══════════════════════════════════════════════════════════════════════
+    # DASHBOARD MODE
+    # ══════════════════════════════════════════════════════════════════════
+    if args.dashboard:
+        import threading
+        from dashboard_server import run_server, pipeline_manager
+
+        # Start FastAPI / WebSocket server in a daemon thread
+        dash_thread = threading.Thread(
+            target=run_server,
+            kwargs={"host": "0.0.0.0", "port": args.dashboard_port},
+            name="DashboardServer",
+            daemon=True,
+        )
+        dash_thread.start()
+        time.sleep(1.0)  # give uvicorn a moment to bind
+
+        print(f"  Dashboard: http://localhost:{args.dashboard_port}  "
+              f"(WS: ws://localhost:{args.dashboard_port}/ws)")
+
+        if args.target:
+            # Auto-start the pipeline with the CLI-specified language
+            print(f"  Auto-starting pipeline: {args.source} → {args.target}")
+            pipeline_manager.start(source_lang=args.source, target_lang=args.target)
+        else:
+            print("  Open the dashboard and press ▶ Start to begin.")
+
+        # Keep main thread alive; pipeline is controlled entirely from the UI
+        print("  Press Ctrl+C to shut down.")
+        try:
+            while True:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\nInterrupt received — shutting down…")
+            pipeline_manager.stop()
+            time.sleep(1.0)  # let stop() propagate
+        sys.exit(0)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CLI-ONLY MODE (no dashboard)
+    # ══════════════════════════════════════════════════════════════════════
+    target = args.target or config.TARGET_LANG
+
     from polyglot_talk.pipeline import Pipeline  # noqa: PLC0415
 
-    pipeline = Pipeline(source_lang=args.source, target_lang=args.target)
-
+    pipeline = Pipeline(source_lang=args.source, target_lang=target)
     pipeline.start()
     pipeline.wait()  # blocks until Ctrl+C or Enter
-    sys.exit(0)  # explicit clean exit
+    sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -76,6 +76,7 @@ class Pipeline:
         self._tts_engine = TTSEngine(
             tts_queue=self.tts_queue,
             stop_event=self._stop_event,
+            target_lang=target_lang,
         )
 
         # Thread handles (created in start())

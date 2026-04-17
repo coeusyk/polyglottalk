@@ -33,6 +33,15 @@ from .models import TranslatedSegment  # noqa: F401 — for type hints in tests
 logger = logging.getLogger(__name__)
 
 
+def _get_broadcaster():
+    """Lazy import — no-op when --dashboard is not used."""
+    try:
+        from dashboard_server import broadcaster  # noqa: PLC0415
+        return broadcaster
+    except ImportError:
+        return None
+
+
 class TTSEngine:
     """Synthesises TranslatedSegment text via MMS-TTS and saves to WAV files.
 
@@ -49,10 +58,12 @@ class TTSEngine:
         tts_queue: "queue.Queue[Optional[TranslatedSegment]]",
         stop_event: threading.Event,
         output_dir: str = config.TTS_OUTPUT_DIR,
+        target_lang: str = config.TARGET_LANG,
     ) -> None:
         self._tts_queue = tts_queue
         self._stop_event = stop_event
         self._output_dir = Path(output_dir)
+        self._target_lang = target_lang  # ISO 639-3 code; used to select MMS-TTS model
 
         # Resolve device at construction time (no torch import yet)
         self._device: str = config.MMS_TTS_DEVICE
@@ -76,8 +87,12 @@ class TTSEngine:
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # Resolve the HuggingFace model ID from the language routing map.
-        # The assertion in config.py guarantees TARGET_LANG is a valid key.
-        model_id: str = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
+        if self._target_lang not in config.MMS_TTS_MODEL_MAP:
+            raise RuntimeError(
+                f"No MMS-TTS model configured for target language {self._target_lang!r}. "
+                f"Add an entry to MMS_TTS_MODEL_MAP in config.py and run setup_models.py."
+            )
+        model_id: str = config.MMS_TTS_MODEL_MAP[self._target_lang]
 
         logger.info(
             "Loading MMS-TTS model '%s' on device=%s…",
@@ -130,6 +145,14 @@ class TTSEngine:
                     item.chunk_id,
                     out_path,
                 )
+                _bc = _get_broadcaster()
+                if _bc is not None:
+                    _bc.emit({
+                        "type": "tts_saved",
+                        "chunk_id": item.chunk_id,
+                        "filename": out_path.name,
+                        "latency_ms": round(e2e * 1000),
+                    })
             else:
                 print(f"[TTS   #{item.chunk_id:>4d}] synthesis failed — no file written", flush=True)
 

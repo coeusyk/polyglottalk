@@ -40,6 +40,15 @@ from .models import TextSegment, TranslatedSegment
 logger = logging.getLogger(__name__)
 
 
+def _get_broadcaster():
+    """Lazy import — no-op when --dashboard is not used."""
+    try:
+        from dashboard_server import broadcaster  # noqa: PLC0415
+        return broadcaster
+    except ImportError:
+        return None
+
+
 class Translator:
     """Translates TextSegment objects into TranslatedSegment objects.
 
@@ -128,6 +137,14 @@ class Translator:
                 elapsed, item.chunk_id, translated,
             )
             print(f"[\u2192{self._target_lang.upper()}  #{item.chunk_id:>4d}] {translated}", flush=True)
+            _bc = _get_broadcaster()
+            if _bc is not None:
+                _bc.emit({
+                    "type": "translation_done",
+                    "chunk_id": item.chunk_id,
+                    "text": translated,
+                    "lang": self._target_lang,
+                })
 
             segment = TranslatedSegment(
                 chunk_id=item.chunk_id,
