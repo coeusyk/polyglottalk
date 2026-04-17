@@ -23,6 +23,8 @@ from polyglot_talk import config  # noqa: F401
 
 import pytest
 
+_MODEL_ID = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
+
 # ---------------------------------------------------------------------------
 # Shared fixture
 # ---------------------------------------------------------------------------
@@ -46,9 +48,9 @@ def test_mms_tts_model_loads() -> None:
     """VitsModel.from_pretrained should load without error."""
     from transformers import VitsModel  # noqa: PLC0415
 
-    model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
+    model = VitsModel.from_pretrained(_MODEL_ID)
     assert model is not None, "VitsModel.from_pretrained returned None"
-    print(f"✓ test_mms_tts_model_loads passed (model={config.MMS_TTS_MODEL_ID})")
+    print(f"✓ test_mms_tts_model_loads passed (model={_MODEL_ID})")
 
 
 def test_mms_tts_synthesises_wav(tmp_path: Path) -> None:
@@ -58,8 +60,8 @@ def test_mms_tts_synthesises_wav(tmp_path: Path) -> None:
     import soundfile as sf  # noqa: PLC0415
     from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
-    tokenizer = VitsTokenizer.from_pretrained(config.MMS_TTS_MODEL_ID)
-    model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
+    tokenizer = VitsTokenizer.from_pretrained(_MODEL_ID)
+    model = VitsModel.from_pretrained(_MODEL_ID)
     model.eval()
 
     inputs = tokenizer(_SAMPLE_TEXT, return_tensors="pt")
@@ -124,6 +126,16 @@ def test_tts_engine_class(tmp_path: Path) -> None:
     out_wav = tmp_path / "chunk_0042.wav"
     assert out_wav.exists(), f"Expected output WAV not found: {out_wav}"
     print(f"✓ test_tts_engine_class passed  (output={out_wav})")
+
+
+def test_model_map_completeness() -> None:
+    """MMS_TTS_MODEL_MAP must have ≥6 entries; every key must have an MT backend."""
+    assert len(config.MMS_TTS_MODEL_MAP) >= 6
+    all_mt_langs = set(config.ARGOS_LANG_MAP) | set(config.MARIANMT_MODEL_MAP) | set(config.NLLB_LANG_MAP)
+    for lang_code in config.MMS_TTS_MODEL_MAP:
+        assert lang_code in all_mt_langs, (
+            f"MMS_TTS_MODEL_MAP key {lang_code!r} missing from all MT backend maps"
+        )
 
 
 if __name__ == "__main__":

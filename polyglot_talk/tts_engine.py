@@ -75,16 +75,20 @@ class TTSEngine:
         if self._device == "auto":
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
+        # Resolve the HuggingFace model ID from the language routing map.
+        # The assertion in config.py guarantees TARGET_LANG is a valid key.
+        model_id: str = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
+
         logger.info(
             "Loading MMS-TTS model '%s' on device=%s…",
-            config.MMS_TTS_MODEL_ID,
+            model_id,
             self._device,
         )
 
         from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
-        self._tokenizer = VitsTokenizer.from_pretrained(config.MMS_TTS_MODEL_ID)
-        self._model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
+        self._tokenizer = VitsTokenizer.from_pretrained(model_id)
+        self._model = VitsModel.from_pretrained(model_id)
         self._model = self._model.to(torch.device(self._device))
         self._model.eval() # type: ignore
 
@@ -93,7 +97,7 @@ class TTSEngine:
         logger.info(
             "TTS engine ready (MMS-TTS, device=%s, model=%s)",
             self._device,
-            config.MMS_TTS_MODEL_ID,
+            model_id,
         )
         # Signal Pipeline.start() that TTS is ready to synthesise
         self._model_ready.set()

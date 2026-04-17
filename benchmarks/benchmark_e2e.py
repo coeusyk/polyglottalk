@@ -128,16 +128,22 @@ def run_benchmark() -> None:
     print(f"  ✓ ASR model loaded ({config.ASR_MODEL_SIZE})")
 
     print("Loading translation model...")
+
     import argostranslate.translate
     # Verify Argos model is installed
     import argostranslate.package
+
+    _argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
     installed = argostranslate.package.get_installed_packages()
-    if not any(p.from_code == "en" and p.to_code == "hi" for p in installed):
-        print("ERROR: Argos en→hi package not installed. Run setup_models.py.")
+
+    if not any(p.from_code == "en" and p.to_code == _argos_target for p in installed):
+        print(f"ERROR: Argos en→{_argos_target} package not installed. Run setup_models.py.")
         sys.exit(1)
-    print(f"  ✓ Translation model loaded (Argos en→hi)")
+
+    print(f"  ✓ Translation model loaded (Argos en→{_argos_target})")
 
     print("Loading MMS-TTS model...")
+
     import torch
     import soundfile as sf
     from transformers import VitsModel, VitsTokenizer
@@ -146,14 +152,15 @@ def run_benchmark() -> None:
     if tts_device == "auto":
         tts_device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    tts_tokenizer = VitsTokenizer.from_pretrained(config.MMS_TTS_MODEL_ID)
-    tts_model = VitsModel.from_pretrained(config.MMS_TTS_MODEL_ID)
+    tts_model_id = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
+    tts_tokenizer = VitsTokenizer.from_pretrained(tts_model_id)
+    tts_model = VitsModel.from_pretrained(tts_model_id)
     tts_model = tts_model.to(tts_device) # type: ignore
     tts_model.eval()
 
     tts_output_dir = os.path.join(PROJECT_ROOT, config.TTS_OUTPUT_DIR, "e2e_benchmark")
     os.makedirs(tts_output_dir, exist_ok=True)
-    print(f"  ✓ MMS-TTS model loaded (device={tts_device}, model={config.MMS_TTS_MODEL_ID})")
+    print(f"  ✓ MMS-TTS model loaded (device={tts_device}, model={tts_model_id})")
 
     print(f"\nRunning {len(audio_clips)} E2E trials...\n")
 
@@ -181,13 +188,14 @@ def run_benchmark() -> None:
 
         # ── MT stage ─────────────────────────────────────────────────────────
         t_mt_start = time.perf_counter()
-        translated = argostranslate.translate.translate(transcript, "en", "hi")
+        translated = argostranslate.translate.translate(transcript, "en", _argos_target)
         t_mt_end = time.perf_counter()
         mt_time = t_mt_end - t_mt_start
 
         # ── TTS stage ────────────────────────────────────────────────────────
         out_path = os.path.join(tts_output_dir, f"bench_chunk_{trial:04d}.wav")
         t_tts_start = time.perf_counter()
+        
         try:
             inputs = tts_tokenizer(translated, return_tensors="pt")
             inputs = {k: v.to(tts_device) for k, v in inputs.items()}
@@ -196,8 +204,10 @@ def run_benchmark() -> None:
             waveform = audio_out.waveform[0].squeeze().cpu().numpy()
             sf.write(out_path, waveform.astype(np.float32),
                      samplerate=tts_model.config.sampling_rate)
+            
         except Exception as exc:
             print(f"  WARNING: MMS-TTS synthesis failed for trial {trial}: {exc}")
+            
         tts_time = time.perf_counter() - t_tts_start
         total_e2e = asr_time + mt_time + tts_time
 

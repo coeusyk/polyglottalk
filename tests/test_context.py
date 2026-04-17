@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from polyglot_talk import config  # noqa: F401
 import pytest
 
+_ARGOS_TARGET = config.ARGOS_LANG_MAP["hin"]  # Argos only supports Hindi for Indian languages
+
 
 # ── Fixture: a Translator wired to mocked argostranslate ─────────────────────
 
@@ -45,7 +47,7 @@ def make_translator():
         # Simulate package installed
         fake_pkg = MagicMock()
         fake_pkg.from_code = config.SOURCE_LANG
-        fake_pkg.to_code = config.TARGET_LANG
+        fake_pkg.to_code = _ARGOS_TARGET
         mock_pkg.return_value = [fake_pkg]
 
         if translate_side_effect is not None:
@@ -60,6 +62,7 @@ def make_translator():
             text_queue=queue.Queue(),
             tts_queue=queue.Queue(),
             stop_event=threading.Event(),
+            target_lang="hin",   # force Argos backend regardless of config.TARGET_LANG
         )
         # mock_tr patches argostranslate.translate.translate which is called
         # by t._translate(text) — no need to replace the instance method.
@@ -81,7 +84,7 @@ def test_empty_context_no_prefix(make_translator) -> None:
 
     result = translator._translate_with_context("Hello world")
 
-    mock_tr.assert_called_once_with("Hello world", config.SOURCE_LANG, config.TARGET_LANG)
+    mock_tr.assert_called_once_with("Hello world", config.SOURCE_LANG, _ARGOS_TARGET)
     assert "Hello world" in result
     print(f"✓ empty context: {result!r}")
 
@@ -172,10 +175,10 @@ def test_trim_prefix_exact() -> None:
          patch("argostranslate.translate.translate"):
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         from polyglot_talk.translator import Translator
-        t = Translator(queue.Queue(), queue.Queue(), threading.Event())
+        t = Translator(queue.Queue(), queue.Queue(), threading.Event(), target_lang="hin")
 
     result = t._trim_prefix("नमस्ते कैसे हैं", "नमस्ते")
     assert result == "कैसे हैं", f"Expected 'कैसे हैं', got {result!r}"
@@ -193,10 +196,10 @@ def test_trim_prefix_no_match_returns_full() -> None:
          patch("argostranslate.translate.translate"):
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         from polyglot_talk.translator import Translator
-        t = Translator(queue.Queue(), queue.Queue(), threading.Event())
+        t = Translator(queue.Queue(), queue.Queue(), threading.Event(), target_lang="hin")
 
     result = t._trim_prefix("completely different text", "XYZ ABC DEF")
     assert result == "completely different text", f"Should be unchanged: {result!r}"
@@ -223,12 +226,12 @@ def test_empty_text_skipped(make_translator) -> None:
          patch("argostranslate.translate.translate") as mtr:
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         mtr.return_value = "translation"
 
         from polyglot_talk.translator import Translator
-        t = Translator(text_q, tts_q, stop)
+        t = Translator(text_q, tts_q, stop, target_lang="hin")
 
         text_q.put(TextSegment(chunk_id=0, text="   "))  # whitespace — should skip
         text_q.put(None)  # sentinel

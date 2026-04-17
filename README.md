@@ -7,7 +7,7 @@ ASR and translation run on **CPU**; TTS (MMS-TTS) automatically uses **CUDA** if
 Microphone → [Whisper ASR] → [Argos Translate] → [MMS-TTS] → WAV Files
 ```
 
-Speak English into your microphone; translated speech is synthesised and saved to `output/chunk_*.wav` files (preventing mic feedback). Each stage runs in its own thread so recording, transcribing, translating, and synthesis all happen **simultaneously**.
+Speak English into your microphone; translated speech is synthesised and saved to `output/chunk_*.wav` files (preventing mic feedback). Each stage runs in its own thread so recording, transcribing, translating, and synthesis all happen **simultaneously**. Supports 8 Indian languages (Hindi, Tamil, Telugu, Kannada, Bengali, Malayalam, Marathi, Gujarati).
 
 ---
 
@@ -68,7 +68,7 @@ sudo apt-get install -y libportaudio2 portaudio19-dev pulseaudio libpulse0 alsa-
 
 ### HuggingFace CLI
 
-MMS-TTS (`facebook/mms-tts-hin`) is a public, ungated repository — no authentication required.
+MMS-TTS models for 8 Indian languages are public, ungated repositories — no authentication required.
 
 > **WSL2 users:** Audio is bridged via WSLg on Windows 11. After installing
 > `libpulse0`, verify your mic appears with:
@@ -79,11 +79,11 @@ MMS-TTS (`facebook/mms-tts-hin`) is a public, ungated repository — no authenti
 
 > **TTS output files:** Synthesised speech is saved to `output/chunk_NNNN.wav`
 > files (where N is the chunk ID). This avoids microphone feedback during
-> live translation and uses MMS-TTS (facebook/mms-tts-hin), a fast
-> non-autoregressive VITS-based model. MMS-TTS automatically runs on **CUDA**
-> when a compatible GPU is detected (`MMS_TTS_DEVICE = "auto"`), falling back
-> to CPU otherwise. Unlike flow-matching models, its latency does not scale
-> with text length.
+> live translation. TTS uses Facebook MMS-TTS, a fast non-autoregressive
+> VITS-based model with per-language checkpoints. MMS-TTS automatically runs
+> on **CUDA** when a compatible GPU is detected (`MMS_TTS_DEVICE = "auto"`),
+> falling back to CPU otherwise. Unlike flow-matching models, its latency does
+> not scale with text length.
 
 ---
 
@@ -98,7 +98,7 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-### 2. Download models (one-time, requires internet, ~2.5 GB)
+### 2. Download models (one-time, requires internet, ~2.5–3.5 GB)
 
 ```bash
 python setup_models.py
@@ -106,8 +106,8 @@ python setup_models.py
 
 This downloads:
 - `faster-whisper` `base.en` int8 model (~150 MB) → `~/.cache/huggingface/hub/`
-- Argos Translate `en→hi` language pack (~100 MB) → `~/.local/share/argos-translate/`
-- Facebook MMS-TTS Hindi model (~150 MB, cached by transformers) → `~/.cache/huggingface/hub/`
+- Argos Translate language packs for all 8 supported languages (~800 MB) → `~/.local/share/argos-translate/`
+- Facebook MMS-TTS model for the configured target language (~150 MB, cached by transformers) → `~/.cache/huggingface/hub/`
 
 ### 3. Run
 
@@ -127,23 +127,27 @@ python main.py [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--source LANG` | `en` | Source language code |
-| `--target LANG` | `hi` | Target language code |
+| `--source LANG` | `en` | Source language (ISO 639-1) |
+| `--target LANG` | `hin` | Target language (ISO 639-3 code; must be in `MMS_TTS_MODEL_MAP`) |
 | `--log-level LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ### Examples
 
 ```bash
-# English → Spanish
-python main.py --source en --target es
+# English → Hindi (ISO 639-3 code)
+python main.py --source en --target hin
+
+# English → Tamil
+python main.py --source en --target tam
 
 # Debug mode (shows all internal logs)
 python main.py --log-level DEBUG
 ```
 
-> Language codes follow [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes).
-> Available language pairs depend on which Argos Translate packages are installed.
-> Run `python setup_models.py` after changing the target language.
+> **Target language codes:** Use ISO 639-3 codes (`hin`, `tam`, `tel`, `kan`, `ben`, `mal`, `mar`, `guj`).
+> These are the keys in `config.py`'s `MMS_TTS_MODEL_MAP` and `ARGOS_LANG_MAP`.
+> Internally, the pipeline bridges ISO 639-3 to ISO 639-1 for Argos Translate.
+> Run `python setup_models.py` after changing the target language to download the translation and TTS models.
 
 ---
 
@@ -225,7 +229,7 @@ Key values in [config.py](polyglot_talk/config.py):
 | `QUEUE_MAXSIZE` | `2` | Max items per inter-thread queue |
 | `CONTEXT_MAXLEN` | `2` | Number of past segments used as MT context |
 | `TTS_OUTPUT_DIR` | `"output"` | Directory where synthesised WAV files are saved |
-| `MMS_TTS_MODEL_ID` | `"facebook/mms-tts-hin"` | HF per-language checkpoint for MMS-TTS |
+| `TARGET_LANG` | `"hin"` | ISO 639-3 target language code (used to select TTS model from `MMS_TTS_MODEL_MAP`) |
 | `MMS_TTS_DEVICE` | `"auto"` | Device for MMS-TTS (`"auto"`, `"cuda"`, or `"cpu"`) |
 
 ---
@@ -271,22 +275,36 @@ This extracts to `data/dev-clean/LibriSpeech/dev-clean/` relative to the project
 ```
 faster-whisper==1.1.0       # ASR — CTranslate2-optimised Whisper
 argostranslate==1.9.6       # Machine translation — OpenNMT + CTranslate2
-transformers>=4.49.0        # VitsModel + VitsTokenizer — MMS-TTS (facebook/mms-tts-hin)
+transformers>=4.49.0        # VitsModel + VitsTokenizer — MMS-TTS per-language models
 sounddevice==0.5.1          # Microphone input via PortAudio
 soundfile==0.13.1           # FLAC/WAV I/O for ASR benchmarking + TTS output
 jiwer==4.0.0                # WER calculation for ASR evaluation
 numpy>=1.24,<2.0            # Audio arrays
 scipy>=1.11                 # Signal processing utilities
 pytest==8.3.4               # Testing
-transformers==4.49.0         # VitsModel + VitsTokenizer for MMS-TTS
 torch==2.10.0               # PyTorch (CPU ok, CUDA optional)
 ```
 
 ---
 
+## Adding a New Language
+
+To add support for a new Indian language to MMS-TTS:
+
+1. Verify Facebook publishes an MMS-TTS checkpoint for that language at `facebook/mms-tts-{lang}` (e.g., `facebook/mms-tts-pan` for Punjabi)
+2. Verify Argos Translate has an `en→{lang}` package at [argosopentech.com](https://www.argosopentech.com/argospm/index/)
+3. In `polyglot_talk/config.py`, add entries to both maps:
+   ```python
+   "pan": "facebook/mms-tts-pan",  # Punjabi → MMS_TTS_MODEL_MAP
+   "pan": "pa",                     # Punjabi → ARGOS_LANG_MAP (ISO 639-3 → ISO 639-1)
+   ```
+4. Run `python setup_models.py` after updating `TARGET_LANG` to the ISO 639-3 code
+5. Test with `python main.py --target pan`
+
+---
+
 ## Future Upgrades
 
-- **More language pairs:** Run `python setup_models.py` after updating `TARGET_LANG` in `polyglot_talk/config.py`
+- **Custom voice cloning:** Support custom TTS voice cloning with reference audio
 - **Live playback:** Optional mode to play TTS output to speakers (separate input device to prevent feedback)
 - **Improved VAD:** Add Silero-VAD before `ASREngine` to pre-filter silence, eliminating ASR hallucinations
-- **Custom voice cloning:** Provide your own Hindi reference audio in `prompts/` directory for personalized TTS voice
