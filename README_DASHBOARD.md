@@ -8,68 +8,120 @@ Microphone → [ASR] → [Translator] → [TTS]
                  ↘                ↘         ↘
               ws broadcast    ws broadcast   ws broadcast + /audio/{file}
                               ↗
-                   Browser dashboard (Vite + React + Tailwind)
+                   Browser dashboard (React + Tailwind)
 ```
+
+There are **two ways to run the dashboard**. Choose whichever fits:
+
+| | Dev mode | Prod mode |
+|---|---|---|
+| Requires | Node.js + running Vite dev server | `npm run build` once, no Node.js at runtime |
+| Browser opens | `http://localhost:5173` | `http://localhost:8765` (or custom port) |
+| Ports needed | 5173 (Vite) + 8765 (FastAPI) | 8765 only |
+| Recommended for | Frontend development | Normal use on WSL2 / Linux |
+
+> **WSL2 users**: See the WSL2 note below before starting.
 
 ---
 
 ## Prerequisites
 
-| Tool | Version |
+| Tool | Purpose |
 |---|---|
-| Python | 3.11.x (same venv as the pipeline) |
-| Node.js | 18+ |
-| npm | 9+ |
+| Python (≥3.11) + venv | Pipeline and FastAPI backend |
+| Node.js (≥18) + npm | Only needed to build or dev the frontend |
 
-Backend deps (already installed if you ran `uv pip install -r requirements.txt`):
+### Python backend deps
+These are already installed if you ran `pip install -r requirements.txt`:
 ```
-fastapi, uvicorn[standard], websockets
+fastapi, uvicorn[standard]
 ```
 
-If not, install manually:
-```pwsh
-uv pip install fastapi "uvicorn[standard]" websockets
+### Installing Node.js on WSL2 / Ubuntu (one-time)
+```bash
+# Install fnm (fast Node manager) — no sudo needed
+curl -fsSL https://fnm.vercel.app/install | bash
+source ~/.bashrc           # reload PATH so fnm is available
+
+fnm install 22             # download Node 22 LTS
+fnm use 22
+node --version             # should print v22.x.x
 ```
 
 ---
 
-## Running the Dashboard
+## Mode A — Production (recommended for WSL2)
 
-### Terminal 1 — Python pipeline with dashboard server
+Build the React app once, then FastAPI serves everything from a single port.
 
-```pwsh
-# Activate your venv first
-.venv\Scripts\activate
-
-# Start pipeline + dashboard WebSocket server (port 8765)
-python main.py --dashboard
-
-# Optional: choose target language and custom port
-python main.py --dashboard --target tam --dashboard-port 8765
+### Step 1 — Build the frontend
+```bash
+cd dashboard
+npm install        # first time only
+npm run build      # outputs to dashboard/dist/
+cd ..
 ```
 
-You'll see:
-```
-============================================================
- PolyglotTalk v0.1 — Offline Speech-to-Speech Translation
- EN → HIN  |  TTS: MMS-TTS (cuda)  |  No cloud APIs
-  Dashboard: http://localhost:8765  (WS: ws://localhost:8765/ws)
-============================================================
-✓ Pipeline ready. Speak now…
+### Step 2 — Start the backend
+```bash
+source .venv/bin/activate
+python main.py --dashboard            # opens http://localhost:8765
+# or with a language pre-selected:
+python main.py --dashboard --target hin
+# or on a custom port:
+python main.py --dashboard --dashboard-port 9000   # opens http://localhost:9000
 ```
 
-### Terminal 2 — React frontend dev server
+Open **http://localhost:8765** (or your custom port) in your browser.
+The dashboard and WebSocket are served from the **same** port — no Vite needed.
 
-```pwsh
+---
+
+## Mode B — Development (hot-reload frontend)
+
+Run both servers simultaneously. Vite proxies API/WS traffic to FastAPI so you
+only need one browser port (5173).
+
+### Terminal 1 — FastAPI backend
+```bash
+source .venv/bin/activate
+python main.py --dashboard --no-prompt
+```
+
+### Terminal 2 — Vite dev server
+```bash
 cd dashboard
 npm install       # first time only
-npm run dev
+npm run dev       # starts at http://localhost:5173
 ```
 
-Then open **http://localhost:5173** in your browser.
+Open **http://localhost:5173** in your browser.
 
-> The React app connects to `ws://localhost:8765/ws` automatically.
-> If the connection drops it auto-reconnects every 2 seconds.
+> **Custom backend port:** If you pass `--dashboard-port 9000`, start Vite with:
+> ```bash
+> VITE_API_PORT=9000 npm run dev
+> ```
+> This tells the Vite proxy where to forward API/WS requests.
+
+### WSL2 note
+The Vite dev server now binds to `0.0.0.0` (all interfaces), so your Windows
+browser can reach it at `http://localhost:5173`. If you still can't connect,
+check that WSL2 mirrored-mode networking is enabled in `.wslconfig`, or use
+the WSL2 machine's IP address instead of `localhost`.
+
+---
+
+## Why WebSocket?
+
+The pipeline is 4 continuously-running threads that push events (ASR chunks,
+translations, TTS completions) as they happen. HTTP poll-based approaches
+would introduce hundreds of milliseconds of extra latency and waste CPU.
+WebSocket gives a persistent bidirectional channel so the server can **push**
+events to the browser the instant they occur — with sub-millisecond overhead.
+
+Each event is a small JSON object (< 200 bytes). The connection auto-reconnects
+every 2 seconds if it drops, and the server re-sends the full pipeline state on
+reconnect so the dashboard always reflects the real state.
 
 ---
 
@@ -103,7 +155,7 @@ Then open **http://localhost:5173** in your browser.
 
 ## WebSocket Events
 
-All events are JSON objects received on `ws://localhost:8765/ws`.
+All events are JSON objects pushed on the `/ws` endpoint.
 
 | Type | Fields | Description |
 |---|---|---|
@@ -111,8 +163,8 @@ All events are JSON objects received on `ws://localhost:8765/ws`.
 | `sentence_flushed` | `chunk_id`, `text` | Complete sentence flushed from buffer |
 | `translation_done` | `chunk_id`, `text`, `lang` | Translated text (ISO 639-3 `lang`) |
 | `tts_saved` | `chunk_id`, `filename`, `latency_ms` | WAV file written; `latency_ms` = capture→file |
-| `pipeline_status` | `status` | `"ready"` or `"stopped"` |
-| `connected` | — | Sent once on WebSocket handshake |
+| `pipeline_status` | `status` | `"ready"`, `"loading"`, `"paused"`, `"stopped"`, `"error"` |
+| `connected` | — | Sent once on WebSocket handshake with current pipeline state |
 
 All events also carry a `ts` field (Unix timestamp seconds).
 
@@ -125,24 +177,29 @@ All events also carry a `ts` field (Unix timestamp seconds).
 | `WS` | `/ws` | WebSocket event stream |
 | `GET` | `/audio/{filename}` | Serve `output/chunk_NNNN.wav` |
 | `GET` | `/health` | `{"status": "ok"}` |
+| `GET` | `/pipeline/state` | Current status, langs, paused flag |
+| `POST` | `/pipeline/start` | Body: `{source_lang, target_lang}` |
+| `POST` | `/pipeline/stop` | Stop pipeline (keeps server alive) |
+| `POST` | `/pipeline/pause` | Pause microphone capture |
+| `POST` | `/pipeline/resume` | Resume microphone capture |
 
 ---
 
 ## Ports
 
-| Service | Port |
-|---|---|
-| FastAPI / WebSocket server | `8765` (configurable via `--dashboard-port`) |
-| Vite React dev server | `5173` |
+| Mode | Port(s) | Change how |
+|---|---|---|
+| Prod (FastAPI static) | `8765` only | `--dashboard-port N` |
+| Dev (Vite proxy) | `5173` (browser) + `8765` (FastAPI) | `VITE_API_PORT=N npm run dev` + `--dashboard-port N` |
 
 ---
 
-## Production Build (optional)
+## How `--dashboard-port` works
 
-```pwsh
-cd dashboard
-npm run build
-# Serve from dashboard/dist/ with any static server
-```
+`--dashboard-port` sets the port that **uvicorn** (FastAPI) listens on.
 
-For production you can point FastAPI to serve `dashboard/dist/` as static files instead of redirecting to port 5173.
+- **Prod mode**: the browser opens that port directly — one port, no confusion.
+- **Dev mode**: the browser always uses Vite's port (5173). The `VITE_API_PORT`
+  env var tells Vite's proxy which port to forward API/WS requests to.
+  If you don't set `VITE_API_PORT`, the proxy defaults to `8765`.
+
