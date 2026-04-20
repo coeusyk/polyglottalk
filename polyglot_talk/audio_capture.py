@@ -89,6 +89,59 @@ class AudioCapture:
         self._raw_q: queue.Queue[np.ndarray] = queue.Queue()
 
         self._chunk_id: int = 0
+        self._stream_ready = threading.Event()
+        self._startup_failed = threading.Event()
+
+    def _candidate_stream_params(self) -> list[tuple[int | str | None, int, str]]:
+        """Return candidate (device, samplerate, label) tuples for mic startup.
+
+        We try the requested pipeline rate first (16 kHz), then the device's
+        native sample rate as a fallback.  On WSLg/PulseAudio this avoids the
+        intermittent PortAudio startup timeout seen on some machines.
+        """
+        candidates: list[tuple[int | str | None, int, str]] = []
+        seen: set[tuple[str, int]] = set()
+
+        default_device = (
+            sd.default.device[0]
+            if isinstance(sd.default.device, (list, tuple))
+            else sd.default.device
+        )
+        for device in (config.AUDIO_INPUT_DEVICE, default_device, "default", "pulse", None):
+            label = "<default>" if device is None else str(device)
+            try:
+                info = sd.query_devices(device, "input")
+            except Exception:
+                continue
+            if int(info.get("max_input_channels", 0)) < 1:
+                continue
+
+            native_rate = int(info.get("default_samplerate") or self._sample_rate)
+            for rate in (self._sample_rate, native_rate):
+                key = (label, rate)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append((device, rate, label))
+
+        if not candidates:
+            candidates.append((config.AUDIO_INPUT_DEVICE, self._sample_rate, "<default>"))
+        return candidates
+
+    def _resample_block(
+        self,
+        block: np.ndarray,
+        from_rate: int,
+        to_rate: int,
+    ) -> np.ndarray:
+        """Resample a mono float32 block to the pipeline's target rate."""
+        if from_rate == to_rate or len(block) == 0:
+            return block.astype(np.float32, copy=False)
+
+        new_len = max(1, int(round(len(block) * to_rate / from_rate)))
+        old_x = np.linspace(0.0, 1.0, num=len(block), endpoint=False)
+        new_x = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+        return np.interp(new_x, old_x, block).astype(np.float32, copy=False)
 
     # ── sounddevice callback (runs in SD internal thread) ──────────────────
 
@@ -122,14 +175,68 @@ class AudioCapture:
         buffer: list[np.ndarray] = []
         buffer_samples: int = 0
 
-        with sd.InputStream(
-            samplerate=self._sample_rate,
-            channels=1,
-            dtype="float32",
-            callback=self._audio_callback,
-        ):
+        stream: sd.InputStream | None = None
+        stream_rate = self._sample_rate
+        stream_label = "<default>"
+        last_error: Exception | None = None
+
+        for device, candidate_rate, label in self._candidate_stream_params():
+            try:
+                logger.info(
+                    "Opening microphone stream (device=%s, samplerate=%d Hz, latency=%s)…",
+                    label,
+                    candidate_rate,
+                    config.AUDIO_INPUT_LATENCY,
+                )
+                sd.check_input_settings(
+                    device=device,
+                    samplerate=candidate_rate,
+                    channels=1,
+                    dtype="float32",
+                )
+                stream = sd.InputStream(
+                    device=device,
+                    samplerate=candidate_rate,
+                    channels=1,
+                    dtype="float32",
+                    latency=config.AUDIO_INPUT_LATENCY,
+                    callback=self._audio_callback,
+                )
+                stream_rate = candidate_rate
+                stream_label = label
+                break
+            except (sd.PortAudioError, OSError, ValueError) as exc:
+                last_error = exc
+                logger.warning(
+                    "Microphone open attempt failed (device=%s, samplerate=%d Hz): %s",
+                    label,
+                    candidate_rate,
+                    exc,
+                )
+
+        if stream is None:
+            self._startup_failed.set()
+            self._stream_ready.set()
+            self._audio_stop_event.set()
+            self._stop_event.set()
+            logger.error(
+                "Could not start microphone stream. Verify your input device and the "
+                "PulseAudio/WSLg bridge. Hint: `pactl list sources short` or set "
+                "POLYGLOT_TALK_AUDIO_DEVICE=pulse` before running the app.",
+                exc_info=last_error,
+            )
+            try:
+                self._audio_queue.put_nowait(None)
+            except queue.Full:
+                pass
+            return
+
+        with stream:
+            self._stream_ready.set()
             logger.info(
-                "Microphone stream opened (%d Hz, mono, overlap=%dms, stride=%dms)",
+                "Microphone stream opened (device=%s, stream=%d Hz → pipeline=%d Hz, overlap=%dms, stride=%dms)",
+                stream_label,
+                stream_rate,
                 self._sample_rate,
                 int(self._overlap_samples / self._sample_rate * 1000),
                 int(self._stride_samples / self._sample_rate * 1000),
@@ -152,6 +259,9 @@ class AudioCapture:
                     block = self._raw_q.get(timeout=config.QUEUE_GET_TIMEOUT)
                 except queue.Empty:
                     continue
+
+                if stream_rate != self._sample_rate:
+                    block = self._resample_block(block, from_rate=stream_rate, to_rate=self._sample_rate)
 
                 buffer.append(block)
                 buffer_samples += len(block)

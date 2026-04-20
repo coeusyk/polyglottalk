@@ -63,7 +63,8 @@ class TTSEngine:
         self._tts_queue = tts_queue
         self._stop_event = stop_event
         self._output_dir = Path(output_dir)
-        self._target_lang = target_lang  # ISO 639-3 code; used to select MMS-TTS model
+
+        self._target_lang = target_lang
 
         # Resolve device at construction time (no torch import yet)
         self._device: str = config.MMS_TTS_DEVICE

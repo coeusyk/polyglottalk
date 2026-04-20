@@ -73,15 +73,8 @@ class Translator:
         self._source_lang = source_lang
         # _target_lang is the ISO 639-3 code used for display (e.g. "hin", "tam").
         self._target_lang = target_lang
-        # Derive backend from the *instance* target_lang, not the global config constant,
-        # so that passing target_lang="hin" always uses Argos even if config.TARGET_LANG
-        # is set to another language.
-        if target_lang in config.ARGOS_SUPPORTED_LANGS:
-            self._mt_backend: str = "argos"
-        elif target_lang in config.MARIANMT_MODEL_MAP:
-            self._mt_backend = "marian"
-        else:
-            self._mt_backend = "nllb"
+        # Derive backend from the *instance* target language.
+        self._mt_backend: str = config.get_mt_backend(target_lang)
 
         self._context_source: Deque[str] = collections.deque(maxlen=context_maxlen)
         self._context_translated: Deque[str] = collections.deque(maxlen=context_maxlen)

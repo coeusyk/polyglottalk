@@ -3,10 +3,11 @@ main.py — Entry point for PolyglotTalk.
 
 Usage
 -----
-    python main.py                          # CLI only, default language
+    python main.py                          # CLI only, interactive target prompt
     python main.py --source en --target hin
     python main.py --dashboard              # dashboard-only, start from UI
     python main.py --dashboard --target hin # dashboard + auto-start pipeline
+    python main.py --no-prompt
     python main.py --log-level DEBUG
 
 IMPORTANT: config is imported first so that OMP_NUM_THREADS and
@@ -39,10 +40,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--target",
-        default=None,          # None = let the dashboard UI decide
+        default=None,
         metavar="LANG",
-        help="Target language ISO 639-3 code. If omitted in --dashboard mode, "
-             "the pipeline is started from the UI.",
+        help=(
+            "Target language ISO 639-3 code. If omitted in CLI mode, prompts "
+            "interactively. If omitted in --dashboard mode, pipeline starts from UI."
+        ),
+    )
+    p.add_argument(
+        "--no-prompt",
+        action="store_true",
+        help="Disable interactive target-language prompt and use config default.",
     )
     p.add_argument(
         "--log-level",
@@ -66,8 +74,57 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _prompt_target_language(default_target: str) -> str:
+    """Prompt user to choose a target language code from supported routes."""
+    supported = config.get_supported_target_langs()
+
+    print("\nSelect target language for English speech translation:")
+    for idx, code in enumerate(supported, start=1):
+        label = config.TARGET_LANG_LABELS.get(code, code)
+        backend = config.get_mt_backend(code)
+        default_tag = "  (default)" if code == default_target else ""
+        print(f"  {idx}. {label} [{code}]  MT={backend}{default_tag}")
+
+    while True:
+        raw = input(f"Choose 1-{len(supported)} or code [{default_target}]: ").strip().lower()
+        if not raw:
+            return default_target
+        if raw.isdigit():
+            pos = int(raw)
+            if 1 <= pos <= len(supported):
+                return supported[pos - 1]
+        if raw in supported:
+            return raw
+        print("Invalid selection. Enter a number from the list or a language code.")
+
+
+def _resolve_target_language(args: argparse.Namespace) -> str:
+    """Resolve target language from args, prompt rules, and runtime mode."""
+    if args.target is not None:
+        return args.target.strip().lower()
+
+    # Dashboard mode keeps source/target selection in the UI unless explicitly set.
+    if args.dashboard:
+        return config.TARGET_LANG
+
+    # CLI mode can prompt interactively unless disabled.
+    if args.no_prompt or not sys.stdin.isatty():
+        return config.TARGET_LANG
+    return _prompt_target_language(default_target=config.TARGET_LANG)
+
+
 def main() -> None:
     args = _build_parser().parse_args()
+    source_lang = args.source.strip().lower()
+    target_lang = _resolve_target_language(args)
+
+    if source_lang not in config.ASR_MODEL_MAP:
+        valid = ", ".join(sorted(config.ASR_MODEL_MAP))
+        raise SystemExit(f"Unsupported --source {source_lang!r}. Valid values: {valid}")
+
+    if target_lang not in config.MMS_TTS_MODEL_MAP:
+        valid = ", ".join(config.get_supported_target_langs())
+        raise SystemExit(f"Unsupported --target {target_lang!r}. Valid values: {valid}")
 
     # ── Logging ───────────────────────────────────────────────────────────
     logging.basicConfig(
@@ -86,10 +143,9 @@ def main() -> None:
         except ImportError:
             device = "cpu"
 
-    target_display = (args.target or config.TARGET_LANG).upper()
     print("=" * 60)
     print(" PolyglotTalk v0.1 — Offline Speech-to-Speech Translation")
-    print(f" {args.source.upper()} → {target_display}  |  TTS: MMS-TTS ({device})  |  No cloud APIs")
+    print(f" {source_lang.upper()} → {target_lang.upper()}  |  TTS: MMS-TTS ({device})  |  No cloud APIs")
     print(f" TTS output saved to: {config.TTS_OUTPUT_DIR}/chunk_NNNN.wav")
     print("=" * 60)
 
@@ -105,9 +161,8 @@ def main() -> None:
     # ══════════════════════════════════════════════════════════════════════
     if args.dashboard:
         import threading
-        from dashboard_server import run_server, pipeline_manager
+        from dashboard_server import pipeline_manager, run_server
 
-        # Start FastAPI / WebSocket server in a daemon thread
         dash_thread = threading.Thread(
             target=run_server,
             kwargs={"host": "0.0.0.0", "port": args.dashboard_port},
@@ -115,19 +170,19 @@ def main() -> None:
             daemon=True,
         )
         dash_thread.start()
-        time.sleep(1.0)  # give uvicorn a moment to bind
+        time.sleep(1.0)
 
-        print(f"  Dashboard: http://localhost:{args.dashboard_port}  "
-              f"(WS: ws://localhost:{args.dashboard_port}/ws)")
+        print(
+            f"  Dashboard: http://localhost:{args.dashboard_port}  "
+            f"(WS: ws://localhost:{args.dashboard_port}/ws)"
+        )
 
         if args.target:
-            # Auto-start the pipeline with the CLI-specified language
-            print(f"  Auto-starting pipeline: {args.source} → {args.target}")
-            pipeline_manager.start(source_lang=args.source, target_lang=args.target)
+            print(f"  Auto-starting pipeline: {source_lang} → {target_lang}")
+            pipeline_manager.start(source_lang=source_lang, target_lang=target_lang)
         else:
             print("  Open the dashboard and press ▶ Start to begin.")
 
-        # Keep main thread alive; pipeline is controlled entirely from the UI
         print("  Press Ctrl+C to shut down.")
         try:
             while True:
@@ -135,19 +190,22 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nInterrupt received — shutting down…")
             pipeline_manager.stop()
-            time.sleep(1.0)  # let stop() propagate
+            time.sleep(1.0)
         sys.exit(0)
 
     # ══════════════════════════════════════════════════════════════════════
     # CLI-ONLY MODE (no dashboard)
     # ══════════════════════════════════════════════════════════════════════
-    target = args.target or config.TARGET_LANG
-
     from polyglot_talk.pipeline import Pipeline  # noqa: PLC0415
 
-    pipeline = Pipeline(source_lang=args.source, target_lang=target)
-    pipeline.start()
-    pipeline.wait()  # blocks until Ctrl+C or Enter
+    pipeline = Pipeline(source_lang=source_lang, target_lang=target_lang)
+
+    try:
+        pipeline.start()
+        pipeline.wait()
+    except RuntimeError as exc:
+        logging.getLogger(__name__).error("%s", exc)
+        sys.exit(1)
     sys.exit(0)
 
 

@@ -56,6 +56,7 @@ class Pipeline:
             audio_queue=self.audio_queue,
             text_queue=self.text_queue,
             stop_event=self._stop_event,
+            source_lang=source_lang,
         )
 
         logger.info("Loading translation model (%s → %s)…", source_lang, target_lang)
@@ -109,9 +110,24 @@ class Pipeline:
                 _TTS_WARMUP_TIMEOUT,
             )
 
-        # ── Start remaining threads once TTS is ready ─────────────────────
+        # ── Start microphone first and wait for it to come up cleanly ─────
+        audio_thread = threading.Thread(
+            target=self._audio_capture.run, name="AudioCaptureThread", daemon=True
+        )
+        self._threads.append(audio_thread)
+        audio_thread.start()
+        logger.info("Started AudioCaptureThread — waiting for microphone stream…")
+
+        _AUDIO_STARTUP_TIMEOUT = 10
+        self._audio_capture._stream_ready.wait(timeout=_AUDIO_STARTUP_TIMEOUT)
+        if self._audio_capture._startup_failed.is_set():
+            self.stop()
+            raise RuntimeError(
+                "Microphone stream failed to start. See the audio log above for device details."
+            )
+
+        # ── Start ASR and Translator once the mic is live ──────────────────
         remaining = [
-            ("AudioCaptureThread", self._audio_capture.run),
             ("ASRThread", self._asr_engine.run),
             ("TranslatorThread", self._translator.run),
         ]

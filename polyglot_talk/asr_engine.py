@@ -90,7 +90,8 @@ class ASREngine:
         audio_queue: queue.Queue,
         text_queue: queue.Queue,
         stop_event: threading.Event,
-        model_size: str = config.ASR_MODEL_SIZE,
+        source_lang: str = config.SOURCE_LANG,
+        model_size: str | None = None,
         compute_type: str = config.ASR_COMPUTE_TYPE,
         beam_size: int = config.ASR_BEAM_SIZE,
     ) -> None:
@@ -98,11 +99,20 @@ class ASREngine:
         self._text_queue = text_queue
         self._stop_event = stop_event
         self._beam_size = beam_size
+        self._source_lang = source_lang
+        self._asr_language = config.ASR_TRANSCRIBE_LANG_MAP.get(source_lang, config.ASR_LANGUAGE)
+        resolved_model_size = model_size or config.ASR_MODEL_MAP.get(source_lang, config.ASR_MODEL_SIZE)
 
-        logger.info("Loading ASR model (%s, %s)…", model_size, compute_type)
+        logger.info(
+            "Loading ASR model (%s, %s) for source=%s (language=%s)…",
+            resolved_model_size,
+            compute_type,
+            source_lang,
+            self._asr_language,
+        )
         t0 = time.perf_counter()
         self.model = WhisperModel(
-            model_size,
+            resolved_model_size,
             device=config.ASR_DEVICE,
             compute_type=compute_type,
         )
@@ -433,7 +443,7 @@ class ASREngine:
         result = self.model.transcribe(
             audio,
             beam_size=self._beam_size,
-            language=config.ASR_LANGUAGE,
+            language=self._asr_language,
             vad_filter=False,
             condition_on_previous_text=False,
         )
