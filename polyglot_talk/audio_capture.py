@@ -89,6 +89,7 @@ class AudioCapture:
         self._raw_q: queue.Queue[np.ndarray] = queue.Queue()
 
         self._chunk_id: int = 0
+        self._global_sample_offset: int = 0  # total samples emitted so far (for global_offset)
         self._stream_ready = threading.Event()
         self._startup_failed = threading.Event()
 
@@ -281,8 +282,10 @@ class AudioCapture:
                         chunk_id=self._chunk_id,
                         audio=chunk_audio,
                         timestamp=time.perf_counter(),
+                        global_offset=self._global_sample_offset / self._sample_rate,
                     )
                     self._chunk_id += 1
+                    self._global_sample_offset += self._stride_samples
                     self._push(item)
 
         logger.info("AudioCapture stopped.")

@@ -79,6 +79,38 @@ ASR_LANGUAGE: str = ASR_TRANSCRIBE_LANG_MAP[SOURCE_LANG]  # skip language-detect
 
 ASR_STRIP_TRAILING_PERIOD: bool = True
 
+# ── ASR tail-correction — short-term fix (issue #15) ───────────────────────
+# When a new ASR chunk has high word-level Jaccard overlap with the tail of
+# the sentence buffer, the tail is *replaced* rather than appended.  This
+# prevents Whisper's garbled re-transcription of the overlap region from
+# doubling content in the final SENT output.
+#
+# TAIL_WINDOW:            number of buffer-tail words inspected for overlap.
+# TAIL_OVERLAP_THRESHOLD: Jaccard ratio above which replacement is triggered.
+# TAIL_MIN_SIZE_RATIO:    new chunk must be ≥ this fraction of the tail slice
+#                         size (prevents tiny fragments from wiping long tails).
+# NEAR_DUP_THRESHOLD:     raised from 0.85 → 0.92 so that chunks containing a
+#                         genuine correction at the tail (slight wording change)
+#                         are not discarded by the near-duplicate guard.
+ASR_TAIL_WINDOW: int = 12
+ASR_TAIL_OVERLAP_THRESHOLD: float = 0.60
+ASR_TAIL_MIN_SIZE_RATIO: float = 0.70
+ASR_NEAR_DUP_THRESHOLD: float = 0.92   # was 0.85 — relaxed to allow tail corrections
+
+# ── ASR timestamp-based dedup — medium-term fix (issue #15) ────────────────
+# When enabled, faster-whisper is asked for per-word timestamps.  Each word's
+# audio midpoint is compared against _committed_cutoff (the global audio-stream
+# offset of the last committed word).  Only words beyond the cutoff are kept.
+# This replaces suffix/prefix text dedup and the near-duplicate guard for the
+# time-axis overlap problem; the tail-correction path remains active for the
+# sentence buffer.
+#
+# ASR_USE_WORD_TIMESTAMPS: set False to fall back to the text-dedup path.
+# ASR_TIMESTAMP_EPSILON:   50 ms lookahead so boundary words are not
+#                          accidentally rejected.
+ASR_USE_WORD_TIMESTAMPS: bool = True
+ASR_TIMESTAMP_EPSILON: float = 0.05   # seconds; words with midpoint ≤ cutoff + ε are rejected
+
 # ── Language codes — IMPORTANT: two different namespaces are in use ─────────
 # MMS-TTS uses ISO 639-3 (three-letter):  "hin", "tam", "tel", "kan", "ben", …
 # Argos Translate uses ISO 639-1 (two-letter): "hi" only (for Indian langs)
