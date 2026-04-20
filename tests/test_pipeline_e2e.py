@@ -20,7 +20,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import config  # noqa: F401
+from polyglot_talk import config  # noqa: F401
 
 import numpy as np
 import pytest
@@ -55,7 +55,7 @@ class _FileAudioCapture:
         self._delay = inter_chunk_delay
 
     def run(self) -> None:
-        from models import AudioChunk
+        from polyglot_talk.models import AudioChunk
 
         for i, audio in enumerate(self._chunks):
             if self._stop_event.is_set():
@@ -100,27 +100,31 @@ class _MockTTSEngine:
 
 @pytest.fixture(scope="module")
 def check_models_installed():
-    """Skip if Argos or faster-whisper are not ready."""
-    import argostranslate.package
+    """Skip if the active MT model or faster-whisper are not ready."""
+    if config.MT_BACKEND == "argos":
+        import argostranslate.package
 
-    installed = argostranslate.package.get_installed_packages()
-    found = any(
-        p.from_code == config.SOURCE_LANG and p.to_code == config.TARGET_LANG
-        for p in installed
-    )
-    if not found:
-        pytest.skip(
-            f"Argos {config.SOURCE_LANG}→{config.TARGET_LANG} not installed. "
-            "Run python setup_models.py."
+        installed = argostranslate.package.get_installed_packages()
+        argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
+        found = any(
+            p.from_code == config.SOURCE_LANG and p.to_code == argos_target
+            for p in installed
         )
+        if not found:
+            pytest.skip(
+                f"Argos {config.SOURCE_LANG}→{argos_target} not installed. "
+                "Run python setup_models.py."
+            )
+    # MarianMT and NLLB: models are cached in HuggingFace hub; no installed-package
+    # check needed. If the cache is empty the test will fail with a clear error.
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 def test_pipeline_with_synthetic_audio(check_models_installed) -> None:
     """Feed 3 sine-wave chunks through the pipeline; expect no crash."""
-    from asr_engine import ASREngine
-    from translator import Translator
+    from polyglot_talk.asr_engine import ASREngine
+    from polyglot_talk.translator import Translator
 
     stop_event = threading.Event()
     audio_queue: queue.Queue = queue.Queue(maxsize=config.QUEUE_MAXSIZE)
@@ -169,7 +173,7 @@ def test_pipeline_with_synthetic_audio(check_models_installed) -> None:
 
 def test_all_threads_exit_on_stop(check_models_installed) -> None:
     """Pipeline.stop() must terminate all 4 threads within 5 s each."""
-    from pipeline import Pipeline
+    from polyglot_talk.pipeline import Pipeline
 
     pipeline = Pipeline()
     pipeline.start()
@@ -193,8 +197,8 @@ def test_latency_measurement(check_models_installed) -> None:
     import logging
     logging.basicConfig(level=logging.INFO, format=config.LOG_FORMAT)
 
-    from asr_engine import ASREngine
-    from translator import Translator
+    from polyglot_talk.asr_engine import ASREngine
+    from polyglot_talk.translator import Translator
 
     stop_event = threading.Event()
     audio_queue: queue.Queue = queue.Queue(maxsize=4)

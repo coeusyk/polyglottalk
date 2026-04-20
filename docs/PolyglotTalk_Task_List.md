@@ -6,22 +6,23 @@
 ## Part 1 — Prototype (Make It Work)
 
 ### 1.1 Stability Fixes
-- [ ] Upgrade faster-whisper model to `base.en` in `config.py` if not already done (`ASR_MODEL_SIZE = "base.en"`)
-- [ ] Add RMS energy check in `asr_engine.py` before pushing to `text_queue` — skip silent chunks where `np.sqrt(np.mean(audio**2)) < 0.01`
-- [ ] Add duplicate transcription guard — if `new_text == previous_text`, skip and do not push to `text_queue`
-- [ ] Confirm faster-whisper generator is fully drained: `" ".join(seg.text for seg in segments)` — never break early from the loop
-- [ ] Set `OMP_NUM_THREADS=2` and `CT2_INTER_THREADS=1` as environment variables in `config.py` before any imports
+- [x] Upgrade faster-whisper model to `base.en` in `config.py` if not already done (`ASR_MODEL_SIZE = "base.en"`)
+- [x] Add RMS energy check in `asr_engine.py` before pushing to `text_queue` — skip silent chunks where `np.sqrt(np.mean(audio**2)) < 0.01`
+- [x] Add duplicate transcription guard — if `new_text == previous_text`, skip and do not push to `text_queue`
+- [x] Confirm faster-whisper generator is fully drained: `" ".join(seg.text for seg in segments)` — never break early from the loop
+- [x] Set `OMP_NUM_THREADS=2` and `CT2_INTER_THREADS=1` as environment variables in `config.py` before any imports
 
 ### 1.2 Context Continuity
-- [ ] Confirm `_translate_with_context()` correctly builds `combined_input = f"{prefix_source} {new_text}".strip()`
-- [ ] Add exact prefix trim: if `full_translation.startswith(prefix_translated)`, strip it
-- [ ] Add `difflib.SequenceMatcher` fuzzy trim as fallback when exact trim fails
-- [ ] Add safety guard: never return an empty string — fall back to `full_translation` as-is if trimmed result is empty
+- [x] Confirm `_translate_with_context()` correctly builds `combined_input = f"{prefix_source} {new_text}".strip()`
+- [x] Add exact prefix trim: if `full_translation.startswith(prefix_translated)`, strip it
+- [x] Add `difflib.SequenceMatcher` fuzzy trim as fallback when exact trim fails
+- [x] Add safety guard: never return an empty string — fall back to `full_translation` as-is if trimmed result is empty
 
 ### 1.3 Threading & Shutdown
-- [ ] Confirm `pyttsx3.init()` is the **first line** inside `TTSEngine.run()` — not in `__init__()`
+- [ ] Confirm `VitsModel.from_pretrained()` is called inside `TTSEngine.run()` — not in `__init__()` — for lazy loading
 - [ ] Replace blocking `queue.put()` calls with `put(item, timeout=1.0)` inside a loop that checks `stop_event`
 - [ ] Confirm all 4 threads are set as daemon threads — Ctrl+C must exit cleanly without hanging
+- [ ] Confirm HuggingFace authentication is set up before running (`huggingface-cli login`)
 
 ### 1.4 Latency Logging *(required for experiments)*
 - [ ] Replace raw `str`/`ndarray` in queues with `AudioChunk`, `TextSegment`, `TranslatedSegment` dataclasses, each carrying `chunk_id: int` and `timestamp: float`
@@ -37,7 +38,7 @@
 - [ ] `test_audio_capture.py` — record 3s from mic, assert WAV file size > 0 and RMS > 0.001
 - [ ] `test_asr.py` — transcribe a known `hello.wav` clip, assert "hello" appears in output
 - [ ] `test_translator.py` — translate "Hello, how are you?" en→hi, assert Devanagari characters in output
-- [ ] `test_tts.py` — speak "Testing one two three" inside a child thread, assert no exception
+- [ ] `test_tts.py` — synthesise "नमस्ते, यह एक परीक्षण है।" via MMS-TTS, assert WAV file is created with non-zero length
 - [ ] `test_context.py` — unit test empty context, 1-segment, 2-segment, fuzzy trim, empty input skip, repeated input skip
 - [ ] `test_pipeline_e2e.py` — feed 3 WAV chunks via mock AudioCapture, assert 2+ translated outputs within 15s, assert all threads shut down within 5s
 
@@ -96,9 +97,10 @@
 ### 3.1 Sections — Write in This Order
 
 #### Step 1 — System Design *(write first, no results needed)*
-- [ ] Describe the 4-thread pipeline: AudioCapture → ASR → Translator → TTS
+- [ ] Describe the 4-thread pipeline: AudioCapture → ASR → Translator → TTS (MMS-TTS model)
 - [ ] Include the pipeline architecture diagram (use the project flowchart)
 - [ ] Include the threading timing diagram (from the implementation plan) showing pipelined parallel execution
+- [ ] Explain TTS model: MMS-TTS (facebook/mms-tts-hin) provides fast non-autoregressive synthesis with fixed speaker voice
 - [ ] Write **Algorithm 1 — Context-Aware Translation**:
   ```
   Input:  text_chunk, context_window (deque, maxlen=2)
@@ -127,11 +129,10 @@
 - [ ] Insert context continuity comparison table (Experiment 4)
 
 #### Step 4 — Discussion
-- [ ] State which ASR model you recommend and why (accuracy vs latency tradeoff)
-- [ ] State which MT model you recommend and why
+- [ ] State which TTS model you recommend: MMS-TTS for fast, efficient, offline synthesis with no additional dependencies
 - [ ] Quantify the improvement from context continuity — this is your key finding
-- [ ] Honestly state limitations: no voice cloning, fixed 2.5s buffer, pyttsx3 robotic voice
-- [ ] Note that better Indian language support (e.g., Sarvam Translate) is a direct upgrade path
+- [ ] Honestly state limitations: MMS-TTS has fixed speaker voice per language, model must be downloaded once per target language
+- [ ] Note that MMS-TTS supports 200+ languages — future translation targets can be added with existing infrastructure
 
 #### Step 5 — Introduction *(write after results are known)*
 - [ ] Open with the real-world problem: multilingual India, unreliable connectivity, no affordable offline calling translation

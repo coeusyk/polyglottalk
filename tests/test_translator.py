@@ -16,9 +16,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import config  # noqa: F401
+from polyglot_talk import config  # noqa: F401
 
 import pytest
+
+_ARGOS_TARGET = config.ARGOS_LANG_MAP["hin"]  # Argos only supports Hindi for Indian languages
 
 
 @pytest.fixture(scope="module")
@@ -28,12 +30,12 @@ def check_model_installed():
 
     installed = argostranslate.package.get_installed_packages()
     found = any(
-        p.from_code == config.SOURCE_LANG and p.to_code == config.TARGET_LANG
+        p.from_code == config.SOURCE_LANG and p.to_code == _ARGOS_TARGET
         for p in installed
     )
     if not found:
         pytest.skip(
-            f"Argos {config.SOURCE_LANG}→{config.TARGET_LANG} not installed. "
+            f"Argos {config.SOURCE_LANG}→{_ARGOS_TARGET} not installed. "
             "Run python setup_models.py first."
         )
 
@@ -43,7 +45,7 @@ def test_hello_translation(check_model_installed) -> None:
     import argostranslate.translate
 
     result = argostranslate.translate.translate(
-        "Hello, how are you?", config.SOURCE_LANG, config.TARGET_LANG
+        "Hello, how are you?", config.SOURCE_LANG, _ARGOS_TARGET
     )
     print(f"Translation: {result!r}")
 
@@ -70,7 +72,7 @@ def test_translation_non_empty(check_model_installed) -> None:
     ]
     for sent in sentences:
         result = argostranslate.translate.translate(
-            sent, config.SOURCE_LANG, config.TARGET_LANG
+            sent, config.SOURCE_LANG, _ARGOS_TARGET
         )
         assert result and result.strip(), f"Empty translation for: {sent!r}"
         print(f"  {sent!r} → {result!r}")

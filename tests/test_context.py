@@ -19,8 +19,10 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import config  # noqa: F401
+from polyglot_talk import config  # noqa: F401
 import pytest
+
+_ARGOS_TARGET = config.ARGOS_LANG_MAP["hin"]  # Argos only supports Hindi for Indian languages
 
 
 # ── Fixture: a Translator wired to mocked argostranslate ─────────────────────
@@ -45,7 +47,7 @@ def make_translator():
         # Simulate package installed
         fake_pkg = MagicMock()
         fake_pkg.from_code = config.SOURCE_LANG
-        fake_pkg.to_code = config.TARGET_LANG
+        fake_pkg.to_code = _ARGOS_TARGET
         mock_pkg.return_value = [fake_pkg]
 
         if translate_side_effect is not None:
@@ -54,12 +56,13 @@ def make_translator():
             # Default: echo "[tgt] {text}"
             mock_tr.side_effect = lambda text, src, tgt: f"[{tgt}] {text}"
 
-        from translator import Translator
+        from polyglot_talk.translator import Translator
 
         t = Translator(
             text_queue=queue.Queue(),
             tts_queue=queue.Queue(),
             stop_event=threading.Event(),
+            target_lang="hin",   # force Argos backend regardless of config.TARGET_LANG
         )
         # mock_tr patches argostranslate.translate.translate which is called
         # by t._translate(text) — no need to replace the instance method.
@@ -81,7 +84,7 @@ def test_empty_context_no_prefix(make_translator) -> None:
 
     result = translator._translate_with_context("Hello world")
 
-    mock_tr.assert_called_once_with("Hello world", config.SOURCE_LANG, config.TARGET_LANG)
+    mock_tr.assert_called_once_with("Hello world", config.SOURCE_LANG, _ARGOS_TARGET)
     assert "Hello world" in result
     print(f"✓ empty context: {result!r}")
 
@@ -172,10 +175,10 @@ def test_trim_prefix_exact() -> None:
          patch("argostranslate.translate.translate"):
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
-        from translator import Translator
-        t = Translator(queue.Queue(), queue.Queue(), threading.Event())
+        from polyglot_talk.translator import Translator
+        t = Translator(queue.Queue(), queue.Queue(), threading.Event(), target_lang="hin")
 
     result = t._trim_prefix("नमस्ते कैसे हैं", "नमस्ते")
     assert result == "कैसे हैं", f"Expected 'कैसे हैं', got {result!r}"
@@ -193,10 +196,10 @@ def test_trim_prefix_no_match_returns_full() -> None:
          patch("argostranslate.translate.translate"):
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
-        from translator import Translator
-        t = Translator(queue.Queue(), queue.Queue(), threading.Event())
+        from polyglot_talk.translator import Translator
+        t = Translator(queue.Queue(), queue.Queue(), threading.Event(), target_lang="hin")
 
     result = t._trim_prefix("completely different text", "XYZ ABC DEF")
     assert result == "completely different text", f"Should be unchanged: {result!r}"
@@ -209,7 +212,7 @@ def test_empty_text_skipped(make_translator) -> None:
 
     mock_tr.side_effect = lambda text, src, tgt: "some translation"
 
-    from models import TextSegment
+    from polyglot_talk.models import TextSegment
     import queue
 
     text_q = queue.Queue()
@@ -223,20 +226,32 @@ def test_empty_text_skipped(make_translator) -> None:
          patch("argostranslate.translate.translate") as mtr:
         fake = MagicMock()
         fake.from_code = "en"
-        fake.to_code = "hi"
+        fake.to_code = _ARGOS_TARGET
         mp.return_value = [fake]
         mtr.return_value = "translation"
 
-        from translator import Translator
-        t = Translator(text_q, tts_q, stop)
+        from polyglot_talk.translator import Translator
+        t = Translator(text_q, tts_q, stop, target_lang="hin")
 
         text_q.put(TextSegment(chunk_id=0, text="   "))  # whitespace — should skip
         text_q.put(None)  # sentinel
 
         t.run()
 
-    # tts_queue should be empty since the input was whitespace
-    assert tts_q.empty(), "tts_queue should be empty for whitespace input"
+    # Translator propagates a shutdown sentinel (None) to tts_queue so that
+    # downstream TTSEngine can exit cleanly.  We drain it here and confirm
+    # that no real TranslatedSegment was enqueued for the whitespace input.
+    from polyglot_talk.models import TranslatedSegment
+    items = []
+    while not tts_q.empty():
+        items.append(tts_q.get_nowait())
+
+    real_segments = [i for i in items if isinstance(i, TranslatedSegment)]
+    assert real_segments == [], (
+        f"Expected no TranslatedSegments for whitespace input, got {real_segments}"
+    )
+    sentinels = [i for i in items if i is None]
+    assert len(sentinels) == 1, f"Expected exactly one shutdown sentinel, got {items}"
     print("✓ empty text skipped")
 
 
