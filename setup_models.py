@@ -13,7 +13,7 @@ What it downloads
     Installed to:  ~/.local/share/argos-translate/packages/  (Linux)
                    %LOCALAPPDATA%\\argos-translate\\packages\\  (Windows)
 
-2b. Helsinki-NLP MarianMT checkpoint for TARGET_LANG — ~300 MB
+2b. Helsinki-NLP MarianMT checkpoints — ~300 MB each
     [Marathi and Malayalam only — only Indian languages with confirmed checkpoints]
     Cached to:  ~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-en-{xx}/
 
@@ -21,10 +21,10 @@ What it downloads
     [Tamil, Telugu, Kannada, Bengali, Gujarati — no Helsinki-NLP checkpoint exists]
     Cached to:  ~/.cache/huggingface/hub/models--facebook--nllb-200-distilled-600M/
 
-3.  Facebook MMS-TTS model for TARGET_LANG — ~150 MB
+3.  Facebook MMS-TTS models for all supported targets — ~150 MB each
     Cached to:  ~/.cache/huggingface/hub/models--facebook--mms-tts-{lang}/
 
-Total:  ~400 MB – 1.5 GB depending on language and cached HuggingFace files.
+Total:  multi-GB on first run (downloads all supported language assets).
 
 Note on MT backend
 ------------------
@@ -32,7 +32,7 @@ Argos Translate only publishes an en→hi offline package for Indian languages.
 Marathi and Malayalam use Helsinki-NLP MarianMT (confirmed checkpoints exist).
 Tamil, Telugu, Kannada, Bengali, and Gujarati use facebook/nllb-200-distilled-600M
 because Helsinki-NLP does not publish en→{ta,te,kn,bn,gu} opus-mt checkpoints.
-This script installs whichever backend applies to config.TARGET_LANG.
+This script installs all backends required by currently configured supported languages.
 
 Usage
 -----
@@ -70,141 +70,155 @@ def _fail(msg: str) -> None:
 
 # ── Step 1: faster-whisper ────────────────────────────────────────────────────
 
-def download_asr_model():
-    print("\n[1/3] Downloading faster-whisper model…")
-    _info(f"Model: {config.ASR_MODEL_SIZE}  compute: {config.ASR_COMPUTE_TYPE}  device: {config.ASR_DEVICE}")
+def download_asr_models() -> dict[str, object]:
+    """Download all configured ASR model routes once each.
+
+    Returns a map {source_lang: WhisperModel} for smoke tests.
+    """
+    print("\n[1/3] Downloading faster-whisper model(s)…")
 
     from faster_whisper import WhisperModel
 
-    t0 = time.perf_counter()
-    model = WhisperModel(
-        config.ASR_MODEL_SIZE,
-        device=config.ASR_DEVICE,
-        compute_type=config.ASR_COMPUTE_TYPE,
-    )
-    elapsed = time.perf_counter() - t0
-    _ok(f"faster-whisper model loaded/verified in {elapsed:.1f}s")
-    return model
+    models: dict[str, object] = {}
+    seen_model_ids: set[str] = set()
+    for source_lang in sorted(config.ASR_MODEL_MAP):
+        model_id = config.ASR_MODEL_MAP[source_lang]
+        _info(
+            f"Source={source_lang}  model={model_id}  compute={config.ASR_COMPUTE_TYPE}  device={config.ASR_DEVICE}"
+        )
+        if model_id in seen_model_ids:
+            _ok(f"ASR model {model_id} already loaded via another source route — skipping.")
+            continue
+        t0 = time.perf_counter()
+        model = WhisperModel(
+            model_id,
+            device=config.ASR_DEVICE,
+            compute_type=config.ASR_COMPUTE_TYPE,
+        )
+        elapsed = time.perf_counter() - t0
+        models[source_lang] = model
+        seen_model_ids.add(model_id)
+        _ok(f"ASR model {model_id} loaded/verified in {elapsed:.1f}s")
+    return models
 
 
-def verify_asr_model(model) -> None:
-    _info("Smoke-testing ASR model (1 second of silence)…")
+def verify_asr_models(models: dict[str, object]) -> None:
+    _info("Smoke-testing ASR model route(s) (1 second of silence)…")
     import numpy as np
 
     silence = np.zeros(config.SAMPLE_RATE, dtype="float32")
-    segments_gen, _info_obj = model.transcribe(
-        silence,
-        beam_size=config.ASR_BEAM_SIZE,
-        language=config.ASR_LANGUAGE,
-        vad_filter=False,
-    )
-    _ = list(segments_gen)
-    _ok("ASR smoke test passed (silence → no crash)")
+    for source_lang in sorted(config.ASR_MODEL_MAP):
+        model_id = config.ASR_MODEL_MAP[source_lang]
+        model = models.get(source_lang)
+        if model is None:
+            # Shared model id already verified by another route.
+            continue
+        asr_lang = config.ASR_TRANSCRIBE_LANG_MAP[source_lang]
+        segments_gen, _info_obj = model.transcribe(
+            silence,
+            beam_size=config.ASR_BEAM_SIZE,
+            language=asr_lang,
+            vad_filter=False,
+        )
+        _ = list(segments_gen)
+        _ok(f"ASR smoke test passed ({source_lang} / {model_id})")
 
 
 # ── Step 2a: Argos Translate (Hindi only) ────────────────────────────────────
 
-def download_argos_model() -> bool:
-    """Attempt to install the Argos en→hi package.
+def download_argos_models() -> bool:
+    """Download all Argos packages required by ARGOS_LANG_MAP.
 
-    Returns True if the package was already installed or successfully
-    downloaded.  Returns False (with a warning) if the package is not
-    found in the upstream index — this is non-fatal because Hindi may
-    still work if a prior install exists, and all other languages use
-    MarianMT.
+    Returns False only if at least one required package is missing upstream.
     """
-    argos_code = config.ARGOS_LANG_MAP.get(config.TARGET_LANG)
-    if argos_code is None:
-        # TARGET_LANG is not in ARGOS_LANG_MAP — Argos is not used at all.
-        return True
-
-    print("\n[2a/3] Downloading Argos Translate language pack (Hindi)…")
+    print("\n[2a/3] Downloading Argos Translate language pack(s)…")
 
     import argostranslate.package
+
+    if not config.ARGOS_LANG_MAP:
+        _ok("No Argos language routes configured — skipping.")
+        return True
 
     _info("Fetching Argos package index (requires internet)…")
     argostranslate.package.update_package_index()
     available = argostranslate.package.get_available_packages()
-
-    pair_label = f"{config.SOURCE_LANG}→{argos_code}"
-
     installed = argostranslate.package.get_installed_packages()
-    already = any(
-        p.from_code == config.SOURCE_LANG and p.to_code == argos_code
-        for p in installed
-    )
-    if already:
-        _ok(f"Argos package {pair_label} already installed — skipping.")
-        return True
 
-    pkg = next(
-        (
-            p
-            for p in available
-            if p.from_code == config.SOURCE_LANG and p.to_code == argos_code
-        ),
-        None,
-    )
-    if pkg is None:
-        # Non-fatal: warn and continue.  The pipeline will raise at startup
-        # if it actually tries to use Argos without the package.
-        _warn(
-            f"No Argos package found for {pair_label} in the upstream index.\n"
-            f"  Check https://www.argosopentech.com/argospm/index/ for available pairs.\n"
-            f"  If you need Hindi TTS, install the package manually and re-run this script."
+    ok = True
+    for target_lang, argos_code in sorted(config.ARGOS_LANG_MAP.items()):
+        pair_label = f"{config.SOURCE_LANG}→{argos_code} ({target_lang})"
+
+        already = any(
+            p.from_code == config.SOURCE_LANG and p.to_code == argos_code
+            for p in installed
         )
-        return False
+        if already:
+            _ok(f"Argos package {pair_label} already installed — skipping.")
+            continue
 
-    _info(f"Downloading {pkg.from_name} → {pkg.to_name} (version {pkg.package_version})…")
-    t0 = time.perf_counter()
-    download_path = pkg.download()
-    argostranslate.package.install_from_path(download_path)
-    elapsed = time.perf_counter() - t0
-    _ok(f"Argos package {pair_label} installed in {elapsed:.1f}s")
-    return True
+        pkg = next(
+            (
+                p
+                for p in available
+                if p.from_code == config.SOURCE_LANG and p.to_code == argos_code
+            ),
+            None,
+        )
+        if pkg is None:
+            ok = False
+            _warn(
+                f"No Argos package found for {pair_label} in the upstream index.\n"
+                f"  Check https://www.argosopentech.com/argospm/index/ for available pairs."
+            )
+            continue
+
+        _info(f"Downloading {pkg.from_name} → {pkg.to_name} (version {pkg.package_version})…")
+        t0 = time.perf_counter()
+        download_path = pkg.download()
+        argostranslate.package.install_from_path(download_path)
+        elapsed = time.perf_counter() - t0
+        _ok(f"Argos package {pair_label} installed in {elapsed:.1f}s")
+
+    return ok
 
 
 # ── Step 2b: MarianMT (all non-Hindi languages) ──────────────────────────────
 
-def download_marian_model() -> None:
-    """Download the Helsinki-NLP MarianMT checkpoint for TARGET_LANG.
-
-    This is a no-op unless TARGET_LANG is Marathi or Malayalam — the only
-    Indian languages for which a Helsinki-NLP opus-mt checkpoint exists.
-    The checkpoint is downloaded to the HuggingFace hub cache and
-    does not need to be re-downloaded on subsequent runs.
-    """
-    if config.TARGET_LANG not in config.MARIANMT_MODEL_MAP:
-        # TARGET_LANG uses Argos, not MarianMT — nothing to do here.
+def download_marian_models() -> None:
+    """Download all configured Helsinki-NLP MarianMT checkpoints."""
+    print("\n[2b/3] Downloading MarianMT translation model(s)…")
+    if not config.MARIANMT_MODEL_MAP:
+        _ok("No MarianMT routes configured — skipping.")
         return
-
-    model_id = config.MARIANMT_MODEL_MAP[config.TARGET_LANG]
-    print("\n[2b/3] Downloading MarianMT translation model…")
-    _info(f"Model: {model_id}")
 
     from transformers import MarianMTModel, MarianTokenizer
 
-    t0 = time.perf_counter()
-    _tokenizer = MarianTokenizer.from_pretrained(model_id)
-    _model = MarianMTModel.from_pretrained(model_id)
-    elapsed = time.perf_counter() - t0
-    del _tokenizer, _model  # free memory — just needed for cache warm-up
-    _ok(f"MarianMT model downloaded/verified in {elapsed:.1f}s")
+    for target_lang, model_id in sorted(config.MARIANMT_MODEL_MAP.items()):
+        _info(f"Target={target_lang}  model={model_id}")
+        t0 = time.perf_counter()
+        _tokenizer = MarianTokenizer.from_pretrained(model_id)
+        _model = MarianMTModel.from_pretrained(model_id)
+        elapsed = time.perf_counter() - t0
+        del _tokenizer, _model  # free memory — just needed for cache warm-up
+        _ok(f"MarianMT model {model_id} downloaded/verified in {elapsed:.1f}s")
 
 
 def download_nllb_model() -> None:
-    """Download facebook/nllb-200-distilled-600M for TARGET_LANG.
+    """Download facebook/nllb-200-distilled-600M once if any NLLB route exists.
 
     Used for Tamil, Telugu, Kannada, Bengali, and Gujarati — languages that
     lack a Helsinki-NLP opus-mt checkpoint.  The model is a ~1.2 GB download
     cached to ~/.cache/huggingface/hub/ and shared across all NLLB languages.
-    This is a no-op if TARGET_LANG uses the Argos or Marian backend.
+    This is a no-op when no NLLB language routes are configured.
     """
-    if config.MT_BACKEND != "nllb":
+    if not config.NLLB_LANG_MAP:
+        _ok("No NLLB routes configured — skipping.")
         return
 
     print("\n[2c/3] Downloading NLLB-200 translation model…")
-    _info(f"Model: {config.NLLB_MODEL_ID}  target tag: {config.NLLB_LANG_MAP[config.TARGET_LANG]}")
+    _info(
+        f"Model: {config.NLLB_MODEL_ID}  targets={','.join(sorted(config.NLLB_LANG_MAP))}"
+    )
 
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -216,25 +230,26 @@ def download_nllb_model() -> None:
     _ok(f"NLLB-200 model downloaded/verified in {elapsed:.1f}s")
 
 
-def verify_translation_model() -> None:
-    """Smoke-test whichever MT backend is active for TARGET_LANG."""
-    _info('Smoke-testing translation model ("Hello")…')
+def verify_translation_model(target_lang: str) -> None:
+    """Smoke-test translation route for one target language."""
+    backend = config.get_mt_backend(target_lang)
+    _info(f'Smoke-testing translation model for target={target_lang} (backend={backend})…')
 
-    if config.MT_BACKEND == "argos":
+    if backend == "argos":
         import argostranslate.translate
-        argos_target = config.ARGOS_LANG_MAP[config.TARGET_LANG]
+        argos_target = config.ARGOS_LANG_MAP[target_lang]
         result = argostranslate.translate.translate("Hello", config.SOURCE_LANG, argos_target)
-    elif config.MT_BACKEND == "marian":
+    elif backend == "marian":
         from transformers import pipeline as hf_pipeline
         import torch
-        model_id = config.MARIANMT_MODEL_MAP[config.TARGET_LANG]
+        model_id = config.MARIANMT_MODEL_MAP[target_lang]
         device = 0 if torch.cuda.is_available() else -1
         pipe = hf_pipeline("translation", model=model_id, device=device)
         result = pipe("Hello")[0]["translation_text"]
     else:  # nllb
         from transformers import pipeline as hf_pipeline
         import torch
-        nllb_tgt = config.NLLB_LANG_MAP[config.TARGET_LANG]
+        nllb_tgt = config.NLLB_LANG_MAP[target_lang]
         device = 0 if torch.cuda.is_available() else -1
         pipe = hf_pipeline(
             "translation",
@@ -249,25 +264,25 @@ def verify_translation_model() -> None:
     if not result or not result.strip():
         _fail("Translation smoke test failed — empty output!")
         sys.exit(1)
-    _ok(f'Translation smoke test passed: "Hello" → "{result.strip()}"')
+    _ok(f'Translation smoke test passed ({target_lang}): "Hello" → "{result.strip()}"')
 
 
 # ── Step 3: Facebook MMS-TTS ─────────────────────────────────────────────────
 
-def download_tts_model() -> None:
-    """Download MMS-TTS model weights to the HuggingFace cache."""
-    print("\n[3/3] Downloading Facebook MMS-TTS model…")
-    model_id = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
-    _info(f"Model: {model_id}  device: {config.MMS_TTS_DEVICE}")
+def download_tts_models() -> None:
+    """Download all configured MMS-TTS checkpoints to HuggingFace cache."""
+    print("\n[3/3] Downloading Facebook MMS-TTS model(s)…")
 
     from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
-    t0 = time.perf_counter()
-    _tokenizer = VitsTokenizer.from_pretrained(model_id)
-    _model = VitsModel.from_pretrained(model_id)
-    elapsed = time.perf_counter() - t0
-    del _tokenizer, _model
-    _ok(f"MMS-TTS model downloaded/verified in {elapsed:.1f}s")
+    for target_lang, model_id in sorted(config.MMS_TTS_MODEL_MAP.items()):
+        _info(f"Target={target_lang}  model={model_id}  device={config.MMS_TTS_DEVICE}")
+        t0 = time.perf_counter()
+        _tokenizer = VitsTokenizer.from_pretrained(model_id)
+        _model = VitsModel.from_pretrained(model_id)
+        elapsed = time.perf_counter() - t0
+        del _tokenizer, _model
+        _ok(f"MMS-TTS model {model_id} downloaded/verified in {elapsed:.1f}s")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -283,22 +298,30 @@ def main() -> None:
 
     print("=" * 60)
     print(" PolyglotTalk — Model Setup")
-    print(f" Language: {config.TARGET_LANG}  MT backend: {config.MT_BACKEND}")
+    print(f" Source routes: {', '.join(sorted(config.ASR_MODEL_MAP))}")
+    print(f" Target routes: {', '.join(config.get_supported_target_langs())}")
     print("=" * 60)
 
-    asr_model = download_asr_model()
+    asr_models = download_asr_models()
     if not args.skip_verify:
-        verify_asr_model(asr_model)
+        verify_asr_models(asr_models)
 
-    # MT backend: Argos (Hindi), MarianMT (Marathi/Malayalam), or NLLB (others)
-    download_argos_model()    # no-op for non-Hindi; non-fatal if package missing
-    download_marian_model()   # no-op unless TARGET_LANG is Marathi or Malayalam
-    download_nllb_model()     # no-op unless TARGET_LANG needs NLLB
+    # MT backend assets: Argos + MarianMT + NLLB routes
+    download_argos_models()
+    download_marian_models()
+    download_nllb_model()
 
     if not args.skip_verify:
-        verify_translation_model()
+        # Verify one representative target per backend to keep setup bounded.
+        verified_backends: set[str] = set()
+        for target_lang in config.get_supported_target_langs():
+            backend = config.get_mt_backend(target_lang)
+            if backend in verified_backends:
+                continue
+            verify_translation_model(target_lang)
+            verified_backends.add(backend)
 
-    download_tts_model()
+    download_tts_models()
 
     print("\n" + "=" * 60)
     print(" \u2713 All models ready for offline use.")

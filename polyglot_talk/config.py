@@ -37,6 +37,13 @@ STRIDE_SAMPLES: int = BLOCK_SIZE - OVERLAP_SAMPLES        # 24 000 samples
 # Measured speech RMS ~0.0003; true silence ~0.00001. Threshold at 0.0001.
 RMS_SILENCE_THRESHOLD: float = 0.0001  # chunks below this RMS are dropped
 
+# ── Microphone / PortAudio stability ────────────────────────────────────────
+# WSLg and some Linux PulseAudio devices expose a 44.1 kHz native mic even
+# though the ASR pipeline consumes 16 kHz. AudioCapture will open at the native
+# device rate when needed and resample down to SAMPLE_RATE.
+AUDIO_INPUT_DEVICE: str | int | None = os.environ.get("POLYGLOT_TALK_AUDIO_DEVICE") or None
+AUDIO_INPUT_LATENCY: str = os.environ.get("POLYGLOT_TALK_AUDIO_LATENCY", "high")
+
 # ── Sentence accumulation ───────────────────────────────────────────────────
 # ASR fragments are buffered until a natural sentence boundary is detected.
 # This reduces the number of MT calls and produces better TTS prosody.
@@ -49,11 +56,26 @@ QUEUE_PUT_TIMEOUT: float = 1.0    # seconds before a blocked put retries
 QUEUE_GET_TIMEOUT: float = 0.5    # seconds before a blocked get retries
 
 # ── ASR (faster-whisper) ────────────────────────────────────────────────────
-ASR_MODEL_SIZE: str = "base.en"
+# Source ASR routing map (addition-friendly): source language → Whisper model.
+# Add a new source language by appending to this map and ASR_TRANSCRIBE_LANG_MAP.
+ASR_MODEL_MAP: dict[str, str] = {
+    "en": "base.en",
+}
+
+# Source language → Whisper `language=` code passed to transcribe().
+ASR_TRANSCRIBE_LANG_MAP: dict[str, str] = {
+    "en": "en",
+}
+
+ASR_SUPPORTED_SOURCE_LANGS: frozenset[str] = frozenset(ASR_MODEL_MAP)
+
+# Default source language and default model route.
+SOURCE_LANG: str = "en"       # ISO 639-1 — shared by ASR and MT source side
+ASR_MODEL_SIZE: str = ASR_MODEL_MAP[SOURCE_LANG]
 ASR_COMPUTE_TYPE: str = "int8"
 ASR_DEVICE: str = "auto"
 ASR_BEAM_SIZE: int = 1
-ASR_LANGUAGE: str = "en"          # skip language-detection for speed
+ASR_LANGUAGE: str = ASR_TRANSCRIBE_LANG_MAP[SOURCE_LANG]  # skip language-detection for speed
 
 ASR_STRIP_TRAILING_PERIOD: bool = True
 
@@ -66,12 +88,23 @@ ASR_STRIP_TRAILING_PERIOD: bool = True
 # all use it for the source side.
 
 # ── Translation backend routing ─────────────────────────────────────────────
-SOURCE_LANG: str = "en"       # ISO 639-1 — shared by Whisper ASR and all MT backends
 
 # Active output language.  Must be a key in both MMS_TTS_MODEL_MAP and
 # ARGOS_LANG_MAP or MARIANMT_MODEL_MAP.  Changing only this constant
 # switches the full pipeline (ASR → MT → TTS).
-TARGET_LANG: str = "guj"      # ISO 639-3 — used as primary language key
+TARGET_LANG: str = "hin"      # ISO 639-3 — used as primary language key
+
+# Human-friendly labels used by CLI prompts and setup summaries.
+TARGET_LANG_LABELS: dict[str, str] = {
+    "hin": "Hindi",
+    "tam": "Tamil",
+    "tel": "Telugu",
+    "kan": "Kannada",
+    "ben": "Bengali",
+    "mal": "Malayalam",
+    "mar": "Marathi",
+    "guj": "Gujarati",
+}
 
 # Languages for which Argos Translate publishes an en→xx offline package.
 # As of 2025, only Hindi is available for Indian languages via argospm.
@@ -105,14 +138,34 @@ NLLB_LANG_MAP: dict[str, str] = {
     "guj": "guj_Gujr",   # Gujarati
 }
 
+
+def get_mt_backend(target_lang: str) -> str:
+    """Return MT backend for a target language key.
+
+    Values:
+      - "argos"  for languages in ARGOS_SUPPORTED_LANGS
+      - "marian" for languages in MARIANMT_MODEL_MAP
+      - "nllb"   otherwise
+    """
+    if target_lang in ARGOS_SUPPORTED_LANGS:
+        return "argos"
+    if target_lang in MARIANMT_MODEL_MAP:
+        return "marian"
+    return "nllb"
+
+
+def get_supported_target_langs() -> tuple[str, ...]:
+    """Return target languages sorted by stable label then key."""
+    return tuple(
+        sorted(
+            MMS_TTS_MODEL_MAP,
+            key=lambda code: (TARGET_LANG_LABELS.get(code, code), code),
+        )
+    )
+
 # MT_BACKEND is derived automatically from TARGET_LANG — do not set manually.
 # Values: "argos" (Hindi) | "marian" (Marathi/Malayalam) | "nllb" (all others)
-if TARGET_LANG in ARGOS_SUPPORTED_LANGS:
-    MT_BACKEND: str = "argos"
-elif TARGET_LANG in MARIANMT_MODEL_MAP:
-    MT_BACKEND = "marian"
-else:
-    MT_BACKEND = "nllb"
+MT_BACKEND: str = get_mt_backend(TARGET_LANG)
 
 CONTEXT_MAXLEN: int = 2           # rolling source-segment window for prefix
 
@@ -138,6 +191,16 @@ MMS_TTS_MODEL_MAP: dict[str, str] = {
 assert TARGET_LANG in MMS_TTS_MODEL_MAP, (
     f"TARGET_LANG={TARGET_LANG!r} has no MMS-TTS checkpoint. "
     f"Valid values: {sorted(MMS_TTS_MODEL_MAP)}"
+)
+
+# Validate source language route at import-time as well.
+assert SOURCE_LANG in ASR_MODEL_MAP, (
+    f"SOURCE_LANG={SOURCE_LANG!r} has no ASR model route. "
+    f"Valid values: {sorted(ASR_MODEL_MAP)}"
+)
+assert SOURCE_LANG in ASR_TRANSCRIBE_LANG_MAP, (
+    f"SOURCE_LANG={SOURCE_LANG!r} has no ASR transcribe language route. "
+    f"Valid values: {sorted(ASR_TRANSCRIBE_LANG_MAP)}"
 )
 
 # Every language must have an Argos, MarianMT, or NLLB entry — never none.
