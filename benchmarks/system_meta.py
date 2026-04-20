@@ -90,7 +90,7 @@ def collect() -> dict[str, str]:
         meta["config_source_lang"] = config.SOURCE_LANG
         meta["config_target_lang"] = config.TARGET_LANG
         meta["config_context_maxlen"] = str(config.CONTEXT_MAXLEN)
-        meta["config_tts_model"] = config.MMS_TTS_MODEL_ID
+        meta["config_tts_model"] = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
         meta["config_tts_device"] = config.MMS_TTS_DEVICE
     except Exception as exc:
         meta["config_load_error"] = str(exc)

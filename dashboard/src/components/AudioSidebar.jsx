@@ -1,14 +1,15 @@
 import { useRef, useState } from 'react'
 
-const API_BASE = 'http://localhost:8765'
-
 function AudioRow({ filename, chunkId }) {
   const [playing, setPlaying] = useState(false)
   const audioRef = useRef(null)
 
   const toggle = () => {
     if (!audioRef.current) {
-      audioRef.current = new Audio(`${API_BASE}/audio/${filename}`)
+      // Use a root-relative path so the URL always targets the same origin
+      // that served the dashboard — works in both Vite dev mode (proxied)
+      // and production (FastAPI static files).
+      audioRef.current = new Audio(`/audio/${filename}`)
       audioRef.current.onended = () => setPlaying(false)
       audioRef.current.onerror = () => setPlaying(false)
     }

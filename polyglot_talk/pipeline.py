@@ -7,8 +7,12 @@ Thread layout (all daemon threads):
                                             → [text_queue] → TranslatorThread
                                                                 → [tts_queue] → TTSThread
 
-All model loading happens in __init__ (main thread) so models are fully
-in memory before the first audio chunk arrives.
+Model loading policy:
+  • ASREngine and Translator each load their model in __init__ (on the main
+    thread) so both models are fully in memory before any thread is started.
+  • TTSEngine loads MMS-TTS inside TTSEngine.run() (on TTSThread).
+    Pipeline.start() waits on ``_tts_engine._model_ready`` before opening the
+    microphone so audio is not captured while TTS is still warming up.
 
 Shutdown sequence (via stop()):
     1. stop_event.set()
@@ -108,6 +112,13 @@ class Pipeline:
                 "TTS model did not finish loading within %ds — "
                 "continuing anyway; first chunks may be dropped.",
                 _TTS_WARMUP_TIMEOUT,
+            )
+        elif self._tts_engine._startup_failed.is_set():
+            self.stop()
+            raise RuntimeError(
+                "TTSEngine failed to load the MMS-TTS model. "
+                "Check the log above for details and run setup_models.py to "
+                "download missing model files."
             )
 
         # ── Start microphone first and wait for it to come up cleanly ─────

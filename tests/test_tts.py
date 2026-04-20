@@ -7,6 +7,10 @@ necessary — MMS-TTS (facebook/mms-tts-hin) is a fixed-voice model.
 
 Run:
     python -m pytest tests/test_tts.py -v
+
+Integration tests (marked with @pytest.mark.integration) require a locally
+cached HuggingFace model and are skipped in offline / CI environments unless
+the POLYGLOT_TALK_RUN_INTEGRATION environment variable is set to "1".
 """
 
 from __future__ import annotations
@@ -14,7 +18,6 @@ from __future__ import annotations
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -32,27 +35,34 @@ _MODEL_ID = config.MMS_TTS_MODEL_MAP[config.TARGET_LANG]
 _SAMPLE_TEXT = "नमस्ते, यह एक परीक्षण है।"  # "Hello, this is a test."
 
 # ---------------------------------------------------------------------------
-# Session-scoped fixtures
+# Helper: skip integration tests unless explicitly requested
 # ---------------------------------------------------------------------------
 
-
-
-
+_RUN_INTEGRATION = os.environ.get("POLYGLOT_TALK_RUN_INTEGRATION", "0") == "1"
+integration = pytest.mark.skipif(
+    not _RUN_INTEGRATION,
+    reason=(
+        "Skipped: requires a locally cached HuggingFace model. "
+        "Set POLYGLOT_TALK_RUN_INTEGRATION=1 to run."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
+@integration
 def test_mms_tts_model_loads() -> None:
     """VitsModel.from_pretrained should load without error."""
     from transformers import VitsModel  # noqa: PLC0415
 
-    model = VitsModel.from_pretrained(_MODEL_ID)
+    model = VitsModel.from_pretrained(_MODEL_ID, local_files_only=True)
     assert model is not None, "VitsModel.from_pretrained returned None"
     print(f"✓ test_mms_tts_model_loads passed (model={_MODEL_ID})")
 
 
+@integration
 def test_mms_tts_synthesises_wav(tmp_path: Path) -> None:
     """MMS-TTS should produce a non-empty float32 WAV at model.config.sampling_rate."""
     import torch  # noqa: PLC0415
@@ -60,8 +70,8 @@ def test_mms_tts_synthesises_wav(tmp_path: Path) -> None:
     import soundfile as sf  # noqa: PLC0415
     from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
-    tokenizer = VitsTokenizer.from_pretrained(_MODEL_ID)
-    model = VitsModel.from_pretrained(_MODEL_ID)
+    tokenizer = VitsTokenizer.from_pretrained(_MODEL_ID, local_files_only=True)
+    model = VitsModel.from_pretrained(_MODEL_ID, local_files_only=True)
     model.eval()
 
     inputs = tokenizer(_SAMPLE_TEXT, return_tensors="pt")
@@ -81,6 +91,7 @@ def test_mms_tts_synthesises_wav(tmp_path: Path) -> None:
     print(f"✓ test_mms_tts_synthesises_wav passed  (duration={len(data)/sr:.2f}s, sr={sr} Hz)")
 
 
+@integration
 def test_tts_engine_class(tmp_path: Path) -> None:
     """TTSEngine.run() must synthesise one segment and exit on sentinel."""
     import queue as _queue  # noqa: PLC0415
@@ -108,8 +119,12 @@ def test_tts_engine_class(tmp_path: Path) -> None:
     t = threading.Thread(target=_run, name="TTSEngineTest", daemon=True)
     t.start()
 
-    # Allow time for MMS-TTS model to load
-    time.sleep(5.0)
+    # Synchronise on the explicit readiness signal instead of an arbitrary sleep
+    _MODEL_LOAD_TIMEOUT = 120  # seconds — generous for first-run GPU transfer
+    engine._model_ready.wait(timeout=_MODEL_LOAD_TIMEOUT)
+
+    if engine._startup_failed.is_set():
+        pytest.fail("TTSEngine model loading failed — see log for details")
 
     seg = TranslatedSegment(chunk_id=42, text=_SAMPLE_TEXT)
     tts_q.put(seg)

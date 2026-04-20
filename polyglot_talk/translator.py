@@ -6,8 +6,13 @@ Backend selection
 Argos Translate is used for Hindi (the only Indian language for which
 an offline Argos en→xx package is published on argospm).
 
-Helsinki-NLP MarianMT (via HuggingFace transformers) is used for all
-other Indian languages.  Both backends are loaded ONCE in __init__;
+Helsinki-NLP MarianMT (via HuggingFace transformers) is used for Indian
+languages that have a confirmed Helsinki-NLP opus-mt checkpoint (currently
+Marathi and Malayalam).
+
+Facebook NLLB-200 (via HuggingFace transformers) is used for the remaining
+Indian languages that lack a MarianMT checkpoint (Tamil, Telugu, Kannada,
+Bengali, Gujarati).  All three backends are loaded ONCE in __init__;
 run() never imports or loads anything.
 
 Context continuity
@@ -18,10 +23,10 @@ to the new text so the model sees sentence-boundary context.  After
 translation the re-translated prefix is trimmed from the output (exact
 match first, fuzzy difflib fallback).
 
-The backend-specific objects are stored as self._argos_translate_fn or
-self._marian_pipeline; _translate() dispatches to whichever is active.
-Everything else (context window, prefix trim, queue discipline) is
-identical regardless of backend.
+The backend-specific objects are stored as self._argos_translate_fn,
+self._marian_pipeline, or self._nllb_pipeline; _translate() dispatches
+to whichever is active.  Everything else (context window, prefix trim,
+queue discipline) is identical regardless of backend.
 """
 
 from __future__ import annotations

@@ -12,7 +12,8 @@ tts_engine.py — Text-to-speech thread using Facebook MMS-TTS (VITS-based).
   dedicated TTSThread.  All subsequent synthesis calls reuse the loaded model.
 
   No reference audio or reference text is required — MMS-TTS is a fixed-voice
-  model; the target language is encoded in config.MMS_TTS_MODEL_ID.
+  model; the target language determines which model is loaded via
+  config.MMS_TTS_MODEL_MAP[config.TARGET_LANG].
 """
 
 from __future__ import annotations
@@ -78,6 +79,11 @@ class TTSEngine:
         # there is no queue build-up while the heavy model initialises.
         self._model_ready = threading.Event()
 
+        # Set by run() if model loading raises an exception so that
+        # Pipeline.start() can detect failure instead of waiting the full
+        # warmup timeout before continuing with a dead TTSThread.
+        self._startup_failed = threading.Event()
+
     # ── Thread target ──────────────────────────────────────────────────────
 
     def run(self) -> None:
@@ -89,10 +95,14 @@ class TTSEngine:
 
         # Resolve the HuggingFace model ID from the language routing map.
         if self._target_lang not in config.MMS_TTS_MODEL_MAP:
-            raise RuntimeError(
-                f"No MMS-TTS model configured for target language {self._target_lang!r}. "
-                f"Add an entry to MMS_TTS_MODEL_MAP in config.py and run setup_models.py."
+            logger.error(
+                "No MMS-TTS model configured for target language %r. "
+                "Add an entry to MMS_TTS_MODEL_MAP in config.py and run setup_models.py.",
+                self._target_lang,
             )
+            self._startup_failed.set()
+            self._model_ready.set()  # unblock Pipeline.start()
+            return
         model_id: str = config.MMS_TTS_MODEL_MAP[self._target_lang]
 
         logger.info(
@@ -101,22 +111,32 @@ class TTSEngine:
             self._device,
         )
 
-        from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
+        try:
+            from transformers import VitsModel, VitsTokenizer  # noqa: PLC0415
 
-        self._tokenizer = VitsTokenizer.from_pretrained(model_id)
-        self._model = VitsModel.from_pretrained(model_id)
-        self._model = self._model.to(torch.device(self._device))
-        self._model.eval() # type: ignore
+            self._tokenizer = VitsTokenizer.from_pretrained(model_id)
+            self._model = VitsModel.from_pretrained(model_id)
+            self._model = self._model.to(torch.device(self._device))
+            self._model.eval()  # type: ignore
 
-        self._output_dir.mkdir(parents=True, exist_ok=True)
+            self._output_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(
-            "TTS engine ready (MMS-TTS, device=%s, model=%s)",
-            self._device,
-            model_id,
-        )
-        # Signal Pipeline.start() that TTS is ready to synthesise
-        self._model_ready.set()
+            logger.info(
+                "TTS engine ready (MMS-TTS, device=%s, model=%s)",
+                self._device,
+                model_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to load MMS-TTS model '%s' — TTSEngine will not synthesise.",
+                model_id,
+            )
+            self._startup_failed.set()
+            return
+        finally:
+            # Always unblock Pipeline.start() so it never hangs on a
+            # dead TTSThread; _startup_failed distinguishes success from failure.
+            self._model_ready.set()
 
         while not self._stop_event.is_set():
             try:
