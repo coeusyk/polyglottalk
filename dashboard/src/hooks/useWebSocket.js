@@ -1,6 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react'
 
-const WS_URL = 'ws://localhost:8765/ws'
+// Always connect WebSocket back to the same host+port that served this page.
+// In dev mode (Vite proxy) that's ws://localhost:5173/ws → proxied to FastAPI.
+// In prod mode (FastAPI static) that's ws://localhost:<dashboard-port>/ws directly.
+const _proto  = window.location.protocol === 'https:' ? 'wss' : 'ws'
+const WS_URL  = `${_proto}://${window.location.host}/ws`
 const RECONNECT_DELAY_MS = 2000
 
 /**

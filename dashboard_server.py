@@ -33,6 +33,7 @@ from typing import Any, Optional, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,8 @@ app.add_middleware(
 )
 
 _OUTPUT_DIR = Path("output")
+# Compiled React build — populated by `npm run build` inside dashboard/
+_DIST_DIR   = Path("dashboard/dist")
 
 
 @app.on_event("startup")
@@ -249,6 +252,13 @@ async def _startup() -> None:
 
 @app.get("/")
 async def root():
+    # Production mode: serve the pre-built React SPA directly.
+    # Run `npm run build` inside the dashboard/ directory first.
+    dist_index = _DIST_DIR / "index.html"
+    if dist_index.exists():
+        return FileResponse(str(dist_index))
+    # Development mode: redirect to the Vite dev server.
+    # Make sure `npm run dev` is running in dashboard/ (requires Node.js).
     return RedirectResponse(url="http://localhost:5173")
 
 
@@ -334,6 +344,16 @@ async def websocket_endpoint(ws: WebSocket):
         pass
     finally:
         broadcaster.disconnect(ws)
+
+
+# ── Production SPA static files ──────────────────────────────────────────────
+# Mount the built React app so FastAPI can serve it without a separate Vite
+# process.  This mount is registered AFTER all explicit API/WS routes so it
+# only catches requests that nothing else matched.
+# When dist/ does NOT exist (dev mode), the mount is skipped and the root()
+# redirect to Vite handles it instead.
+if _DIST_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True), name="spa")
 
 
 # ── Server launcher ───────────────────────────────────────────────────────────

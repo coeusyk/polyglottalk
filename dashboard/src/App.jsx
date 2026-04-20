@@ -8,7 +8,10 @@ import { StatsBar }          from './components/StatsBar'
 import { PipelineControl }   from './components/PipelineControl'
 
 const MAX_LOG_EVENTS = 200
-const API_BASE = 'http://localhost:8765'
+// Use relative URLs so the app works regardless of which port serves it:
+// - dev mode:  Vite proxy forwards /pipeline/* and /audio/* to FastAPI
+// - prod mode: FastAPI serves the built files AND the API on the same port
+const API_BASE = ''
 
 function initStats() {
   return {
