@@ -9,3 +9,4 @@ __pycache__/
 dev-clean
 output/
 prompts
+tests/test_output.wav

@@ -20,6 +20,11 @@ class AudioChunk:
     chunk_id: int
     audio: np.ndarray          # float32, shape (BLOCK_SIZE,)
     timestamp: float = field(default_factory=time.perf_counter)
+    # Monotonically increasing audio-stream offset (seconds) of the first
+    # sample in this chunk.  Set by AudioCapture from the running sample
+    # counter so that word timestamps from faster-whisper can be converted
+    # to global audio offsets for _committed_cutoff comparison.
+    global_offset: float = 0.0
 
 
 @dataclass

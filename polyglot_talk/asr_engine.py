@@ -119,13 +119,16 @@ class ASREngine:
         logger.info("ASR model loaded in %.1fs", time.perf_counter() - t0)
 
         self._last_text: str = ""
-        # Word list from the previous chunk's transcription — for dedup
+        # Word list from the previous chunk's transcription — for text-based dedup
         self._prev_words: list[str] = []
         # Sentence accumulation buffer
         self._sentence_buf: list[str] = []
         self._sentence_chunk_id: int = 0
         self._sentence_capture_ts: float = 0.0
         self._last_text_time: float = 0.0  # perf_counter when last text appended
+        # Medium-term: global audio-stream offset of the last committed word.
+        # Updated each chunk when ASR_USE_WORD_TIMESTAMPS is True.
+        self._committed_cutoff: float = 0.0
 
     # ── Thread target ───────────────────────────────────────────────────────
 
@@ -163,7 +166,12 @@ class ASREngine:
 
             # ── Transcribe ─────────────────────────────────────────────────
             t0 = time.perf_counter()
-            text = self._transcribe(item.audio)
+            if config.ASR_USE_WORD_TIMESTAMPS:
+                _words_with_ts = self._transcribe_with_timestamps(item.audio)
+                text = " ".join(w for w, _, _ in _words_with_ts).strip()
+            else:
+                _words_with_ts = None
+                text = self._transcribe(item.audio)
             elapsed = time.perf_counter() - t0
 
             if not text:
@@ -186,37 +194,64 @@ class ASREngine:
                     text,
                 )
                 continue
-            # ── Near-duplicate guard ──────────────────────────────────────
-            # Catches Whisper re-transcribing the overlapping region with
-            # slightly different wording (capitalisation / punctuation) so
-            # the exact-dup check above didn't catch it.
-            if self._last_text:
-                _curr_set = set(w.lower() for w in text.split())
-                _prev_set = set(w.lower() for w in self._last_text.split())
-                _overlap_count = len(_curr_set & _prev_set)
-                _min_len = min(len(text.split()), len(self._last_text.split()))
-                if _min_len > 0 and _overlap_count / _min_len > 0.85:
+            if config.ASR_USE_WORD_TIMESTAMPS:
+                # ── Medium-term: timestamp-based dedup ────────────────────
+                # Accept only words whose audio midpoint (chunk-relative
+                # start/end + chunk global_offset) is strictly beyond the
+                # last committed cutoff.  Replaces both suffix/prefix text
+                # dedup and the near-duplicate guard for overlap regions.
+                global_offset = item.global_offset
+                accepted_words: list[str] = []
+                new_cutoff = self._committed_cutoff
+                for word_text, start_s, end_s in _words_with_ts:  # type: ignore[union-attr]
+                    midpoint = (start_s + end_s) / 2.0 + global_offset
+                    if midpoint > self._committed_cutoff + config.ASR_TIMESTAMP_EPSILON:
+                        accepted_words.append(word_text)
+                        new_cutoff = max(new_cutoff, end_s + global_offset)
+
+                if not accepted_words:
                     logger.debug(
-                        "Chunk %d near-duplicate of previous (%.0f%%), skipping.",
+                        "Chunk #%d — all words before committed cutoff (%.3fs), skipping.",
                         item.chunk_id,
-                        _overlap_count / _min_len * 100,
+                        self._committed_cutoff,
                     )
                     continue
+
+                self._committed_cutoff = new_cutoff
+                deduped_text = " ".join(accepted_words)
+            else:
+                # ── Short-term: text-based overlap dedup ──────────────────
+                curr_words = text.split()
+                deduped_words = self._deduplicate_overlap(self._prev_words, curr_words)
+                self._prev_words = curr_words  # keep full transcription for next round
+
+                if not deduped_words:
+                    logger.debug(
+                        "Chunk #%d — all words duplicated from overlap, skipping.",
+                        item.chunk_id,
+                    )
+                    continue
+
+                deduped_text = " ".join(deduped_words)
+
+                # ── Near-duplicate guard ──────────────────────────────────
+                # Compares deduped_text (new words only) against the previous
+                # chunk's full transcript.  Threshold raised to 0.92 so chunks
+                # with a genuine tail correction are not discarded.
+                if self._last_text:
+                    _curr_set = set(w.lower() for w in deduped_text.split())
+                    _prev_set = set(w.lower() for w in self._last_text.split())
+                    _overlap_count = len(_curr_set & _prev_set)
+                    _min_len = min(len(deduped_text.split()), len(self._last_text.split()))
+                    if _min_len > 0 and _overlap_count / _min_len > config.ASR_NEAR_DUP_THRESHOLD:
+                        logger.debug(
+                            "Chunk %d near-duplicate of previous (%.0f%%), skipping.",
+                            item.chunk_id,
+                            _overlap_count / _min_len * 100,
+                        )
+                        continue
+
             self._last_text = text
-
-            # ── Overlap deduplication ──────────────────────────────────────
-            curr_words = text.split()
-            deduped_words = self._deduplicate_overlap(self._prev_words, curr_words)
-            self._prev_words = curr_words  # keep full transcription for next round
-
-            if not deduped_words:
-                logger.debug(
-                    "Chunk #%d — all words duplicated from overlap, skipping.",
-                    item.chunk_id,
-                )
-                continue
-
-            deduped_text = " ".join(deduped_words)
 
             # ── Strip trailing period ──────────────────────────────────────
             deduped_text = self._normalize_punctuation(deduped_text)
@@ -236,16 +271,43 @@ class ASREngine:
             if _bc is not None:
                 _bc.emit({"type": "asr_chunk", "chunk_id": item.chunk_id, "text": deduped_text})
 
-            # ── Append to sentence buffer ──────────────────────────────────
+            # ── Sentence buffer: timeout check + tail correction ───────────
             # Check timeout BEFORE adding new text: if the previous buffer
-            # has been waiting longer than SENTENCE_BUFFER_TIMEOUT (e.g. the
-            # user paused then started a new sentence), flush the old content
+            # has been waiting longer than SENTENCE_BUFFER_TIMEOUT, flush it
             # first so the new content starts a fresh sentence.
             self._maybe_flush_timeout()
             if not self._sentence_buf:
                 self._sentence_chunk_id = item.chunk_id
                 self._sentence_capture_ts = item.timestamp
-            self._sentence_buf.append(deduped_text)
+
+            # ── Short-term: tail-correction ────────────────────────────────
+            # If the new chunk has high Jaccard overlap with the tail of the
+            # buffer, replace the tail rather than appending.  Corrects
+            # Whisper's garbled re-transcription of the overlapping region
+            # that text-based dedup cannot reliably catch.
+            new_words = deduped_text.split()
+            tail_text = " ".join(self._sentence_buf)
+            tail_words = tail_text.split()
+            tail_slice = (
+                tail_words[-config.ASR_TAIL_WINDOW :]
+                if len(tail_words) > config.ASR_TAIL_WINDOW
+                else tail_words
+            )
+            overlap_ratio = self._word_overlap_ratio(tail_slice, new_words)
+            if (
+                self._sentence_buf
+                and overlap_ratio > config.ASR_TAIL_OVERLAP_THRESHOLD
+                and len(new_words) >= len(tail_slice) * config.ASR_TAIL_MIN_SIZE_RATIO
+            ):
+                keep_len = max(len(tail_words) - len(tail_slice), 0)
+                self._sentence_buf = [" ".join(tail_words[:keep_len] + new_words)]
+                logger.debug(
+                    "Tail correction: overlap=%.0f%%, replacing last %d words with new chunk.",
+                    overlap_ratio * 100,
+                    len(tail_slice),
+                )
+            else:
+                self._sentence_buf.append(deduped_text)
             self._last_text_time = time.perf_counter()
 
             # Force-flush if buffer is too long
@@ -257,6 +319,25 @@ class ASREngine:
         logger.info("ASREngine stopped.")
 
     # ── Overlap deduplication ───────────────────────────────────────────────
+
+    @staticmethod
+    def _word_overlap_ratio(a: list[str], b: list[str]) -> float:
+        """Jaccard overlap between two word lists (case-insensitive).
+
+        Returns the size of the intersection divided by the size of the
+        *smaller* set, so a short new chunk can still register high overlap
+        with a longer tail slice.
+
+        Examples
+        --------
+        >>> ASREngine._word_overlap_ratio(["and", "it", "is", "all"], ["and", "it", "is", "also"])
+        0.6
+        """
+        a_set = {w.lower() for w in a}
+        b_set = {w.lower() for w in b}
+        if not a_set or not b_set:
+            return 0.0
+        return len(a_set & b_set) / min(len(a_set), len(b_set))
 
     @staticmethod
     def _normalize_token(w: str) -> str:
@@ -453,6 +534,36 @@ class ASREngine:
         # Drain the generator completely
         text = "".join(seg.text for seg in segments_gen).strip()
         return text
+
+    def _transcribe_with_timestamps(
+        self, audio: np.ndarray
+    ) -> list[tuple[str, float, float]]:
+        """Run faster-whisper with word_timestamps=True.
+
+        Returns a list of ``(word, start_s, end_s)`` tuples where *start_s*
+        and *end_s* are **chunk-relative** seconds.  The caller adds
+        ``AudioChunk.global_offset`` to convert to global audio-stream time.
+
+        The generator is fully drained before returning to avoid corrupting
+        CTranslate2 state across calls.
+        """
+        result = self.model.transcribe(
+            audio,
+            beam_size=self._beam_size,
+            language=self._asr_language,
+            vad_filter=False,
+            condition_on_previous_text=False,
+            word_timestamps=True,
+        )
+        segments_gen = result[0] if isinstance(result, tuple) else result
+        words: list[tuple[str, float, float]] = []
+        for seg in segments_gen:
+            if seg.words:
+                for w in seg.words:
+                    word_text = w.word.strip()
+                    if word_text:
+                        words.append((word_text, float(w.start), float(w.end)))
+        return words
 
     def _put(self, segment: TextSegment) -> None:
         """Push to text_queue with drop-oldest strategy on Full.
