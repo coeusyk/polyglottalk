@@ -30,16 +30,16 @@
 **Branch:** `multi-language-tts` (merge → develop when complete)
 
 ### Tasks
-- [ ] Implement tail-replacement logic in `ASREngine.run`:
+- [x] Implement tail-replacement logic in `ASREngine.run`:
   - Compare new chunk against last N words of `_sentence_buf`
   - If Jaccard overlap > 0.6 and new chunk is a plausible restatement, replace tail instead of appending
   - Log replacements at DEBUG level for observability
-- [ ] Relax or remove full-chunk near-duplicate guard (currently 85% threshold on raw text)
-- [ ] Add `_word_overlap_ratio(a, b)` helper to `asr_engine.py`
-- [ ] Write regression test:
+- [x] Relax or remove full-chunk near-duplicate guard (currently 85% threshold on raw text)
+- [x] Add `_word_overlap_ratio(a, b)` helper to `asr_engine.py`
+- [x] Write regression test:
   - Input: two consecutive chunks where chunk B restates chunk A's tail differently
   - Assert: final `SENT` string contains only one version of the phrase
-- [ ] Write unit test for `_deduplicate_overlap` edge cases (empty input, single word, identical chunks)
+- [x] Write unit test for `_deduplicate_overlap` edge cases (empty input, single word, identical chunks)
 
 ### Acceptance Criteria
 - Running the EN→HIN pipeline for 2 minutes of continuous speech produces no audible double-speech in TTS output
