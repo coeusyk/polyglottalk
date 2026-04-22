@@ -337,9 +337,10 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.send_text(json.dumps({"type": "connected", "ts": time.time(), **state}))
     try:
         while True:
-            await asyncio.wait_for(ws.receive_text(), timeout=30)
-    except asyncio.TimeoutError:
-        pass
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=30)
+            except asyncio.TimeoutError:
+                pass  # client is receive-only; keep the connection alive
     except WebSocketDisconnect:
         pass
     finally:
