@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
-import { LiveTranscript }    from './components/LiveTranscript'
-import { TranslationPanel }  from './components/TranslationPanel'
-import { ChunkLog }          from './components/ChunkLog'
-import { AudioSidebar }      from './components/AudioSidebar'
-import { StatsBar }          from './components/StatsBar'
-import { PipelineControl }   from './components/PipelineControl'
+import { TranscriptFeed }  from './components/TranscriptFeed'
+import { ChunkLog }        from './components/ChunkLog'
+import { AudioSidebar }    from './components/AudioSidebar'
+import { StatsBar }        from './components/StatsBar'
+import { PipelineControl } from './components/PipelineControl'
 
 const MAX_LOG_EVENTS = 200
 // Use relative URLs so the app works regardless of which port serves it:
@@ -35,21 +34,22 @@ export default function App() {
   const [targetLang, setTargetLang]         = useState('hin')
 
   // ── Transcription ───────────────────────────────────────────────
-  const [partialText, setPartialText]           = useState('')
-  const [flushing, setFlushing]                 = useState(false)
-  // Each entry: { chunkId, text, translation: string|null }
+  const [partialText, setPartialText] = useState('')
+  const [flushing, setFlushing]       = useState(false)
+  // Each entry: { chunkId, text, hi, ttsFile, latencyMs, status }
+  // status: 'translating' | 'tts' | 'done'
   const [confirmedEntries, setConfirmedEntries] = useState([])
 
-  // ── Translation ─────────────────────────────────────────────────
-  const [translationText, setTranslationText] = useState('')
-  const [translationLang, setTranslationLang] = useState('')
-
   // ── Log & audio ─────────────────────────────────────────────────
-  const [events, setEvents]     = useState([])
+  const [events, setEvents]         = useState([])
   const [audioFiles, setAudioFiles] = useState([])
 
   // ── Stats ────────────────────────────────────────────────────────
   const [stats, setStats] = useState(initStats)
+
+  // ── Drawer (AudioSidebar + EventLog) ─────────────────────────────
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerTab, setDrawerTab]   = useState('audio') // 'audio' | 'log'
 
   // ── Helper: apply state from server ─────────────────────────────
   const applyServerState = useCallback((state) => {
@@ -84,9 +84,12 @@ export default function App() {
         setFlushing(true)
         setTimeout(() => {
           setConfirmedEntries(prev => [...prev, {
-            chunkId: event.chunk_id,
-            text: event.text,
-            translation: null,   // filled in when translation_done arrives
+            chunkId:   event.chunk_id,
+            text:      event.text,
+            hi:        null,
+            ttsFile:   null,
+            latencyMs: null,
+            status:    'translating',
           }])
           setPartialText('')
           setFlushing(false)
@@ -101,24 +104,42 @@ export default function App() {
           const idx = prev.findLastIndex?.(e => e.chunkId === event.chunk_id)
             ?? [...prev].reverse().findIndex(e => e.chunkId === event.chunk_id)
           if (idx === -1) {
-            // Fallback: attach to the most recent entry that has no translation yet
-            const fallbackIdx = [...prev].reverse().findIndex(e => e.translation === null)
+            // Fallback: attach to the most recent entry still translating
+            const fallbackIdx = [...prev].reverse().findIndex(e => e.status === 'translating')
             if (fallbackIdx === -1) return prev
             const realIdx = prev.length - 1 - fallbackIdx
-            return prev.map((e, i) => i === realIdx ? { ...e, translation: event.text } : e)
+            return prev.map((e, i) => i === realIdx ? { ...e, hi: event.text, status: 'tts' } : e)
           }
-          // For findLastIndex polyfill path, idx might be reversed
           const realIdx = typeof prev.findLastIndex === 'function' ? idx : prev.length - 1 - idx
-          return prev.map((e, i) => i === realIdx ? { ...e, translation: event.text } : e)
+          return prev.map((e, i) => i === realIdx ? { ...e, hi: event.text, status: 'tts' } : e)
         })
-        setTranslationText(event.text)
-        setTranslationLang(event.lang ?? '')
         setStats(s => ({ ...s, translationCount: s.translationCount + 1 }))
         break
       }
 
       case 'tts_saved': {
         setAudioFiles(prev => [...prev, { filename: event.filename, chunkId: event.chunk_id }])
+        setConfirmedEntries(prev => {
+          const idx = prev.findLastIndex?.(e => e.chunkId === event.chunk_id)
+            ?? [...prev].reverse().findIndex(e => e.chunkId === event.chunk_id)
+          if (idx === -1) {
+            // Fallback: attach to most recent non-done entry
+            const fallbackIdx = [...prev].reverse().findIndex(e => e.status !== 'done')
+            if (fallbackIdx === -1) return prev
+            const realIdx = prev.length - 1 - fallbackIdx
+            return prev.map((e, i) =>
+              i === realIdx
+                ? { ...e, ttsFile: event.filename, latencyMs: event.latency_ms ?? null, status: 'done' }
+                : e
+            )
+          }
+          const realIdx = typeof prev.findLastIndex === 'function' ? idx : prev.length - 1 - idx
+          return prev.map((e, i) =>
+            i === realIdx
+              ? { ...e, ttsFile: event.filename, latencyMs: event.latency_ms ?? null, status: 'done' }
+              : e
+          )
+        })
         setStats(s => ({
           ...s,
           ttsCount: s.ttsCount + 1,
@@ -148,8 +169,6 @@ export default function App() {
           setStats(initStats())
           setPartialText('')
           setConfirmedEntries([])
-          setTranslationText('')
-          setTranslationLang('')
           setAudioFiles([])
         }
         break
@@ -260,45 +279,82 @@ export default function App() {
           />
           {connected ? 'WS Connected' : 'Reconnecting…'}
         </div>
+
+        {/* Drawer toggle button */}
+        <button
+          onClick={() => setDrawerOpen(o => !o)}
+          className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
+          style={{
+            background: drawerOpen ? 'rgba(79,142,247,0.15)' : 'var(--bg-card)',
+            color: drawerOpen ? 'var(--accent-blue)' : 'var(--text-muted)',
+            border: `1px solid ${drawerOpen ? 'rgba(79,142,247,0.35)' : 'var(--border)'}`,
+          }}
+          aria-label="Toggle sidebar drawer"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <rect x="1" y="1" width="12" height="12" rx="2"/>
+            <line x1="9" y1="1" x2="9" y2="13"/>
+          </svg>
+          Logs
+        </button>
       </header>
 
       {/* ── Main content ─────────────────────────────────────────── */}
       <main className="flex flex-1 overflow-hidden">
 
-        {/* Left: transcription + translation */}
-        <div
-          className="flex flex-col flex-1 overflow-hidden"
-          style={{ borderRight: '1px solid var(--border)' }}
-        >
-          {/* Live transcript */}
-          <div
-            className="flex-1 overflow-hidden p-5"
-            style={{ borderBottom: '1px solid var(--border)' }}
-          >
-            <LiveTranscript
-              partialText={partialText}
-              flushing={flushing}
-              confirmedEntries={confirmedEntries}
-            />
-          </div>
-
-          {/* Translation */}
-          <div className="flex-1 overflow-hidden p-5" style={{ background: 'var(--bg-surface)' }}>
-            <TranslationPanel translationText={translationText} lang={translationLang} />
-          </div>
+        {/* TranscriptFeed — full width, paired sentence cards */}
+        <div className="flex-1 overflow-hidden p-5">
+          <TranscriptFeed
+            confirmedEntries={confirmedEntries}
+            partialText={partialText}
+            flushing={flushing}
+          />
         </div>
 
-        {/* Right: audio + event log */}
-        <div className="w-80 flex flex-col overflow-hidden shrink-0">
-          <div
-            className="shrink-0 overflow-hidden p-4"
-            style={{ height: '45%', borderBottom: '1px solid var(--border)' }}
-          >
-            <AudioSidebar audioFiles={audioFiles} />
-          </div>
-          <div className="flex-1 overflow-hidden p-4">
-            <ChunkLog events={events} />
-          </div>
+        {/* Collapsible right drawer: AudioSidebar + EventLog */}
+        <div
+          className="flex flex-col shrink-0 overflow-hidden"
+          style={{
+            width: drawerOpen ? '320px' : '0',
+            transition: 'width 0.25s ease',
+            borderLeft: drawerOpen ? '1px solid var(--border)' : 'none',
+          }}
+        >
+          {drawerOpen && (
+            <>
+              {/* Drawer tab bar */}
+              <div
+                className="flex shrink-0"
+                style={{ borderBottom: '1px solid var(--border)' }}
+              >
+                {['audio', 'log'].map(tab => (
+                  <button
+                    key={tab}
+                    onClick={() => setDrawerTab(tab)}
+                    className="flex-1 py-2 text-xs font-medium transition-colors"
+                    style={{
+                      color: drawerTab === tab ? 'var(--accent-blue)' : 'var(--text-muted)',
+                      borderBottom: drawerTab === tab ? '2px solid var(--accent-blue)' : '2px solid transparent',
+                      background: 'none',
+                      border: 'none',
+                      borderBottom: drawerTab === tab ? `2px solid var(--accent-blue)` : '2px solid transparent',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {tab === 'audio' ? 'Audio Files' : 'Event Log'}
+                  </button>
+                ))}
+              </div>
+
+              {/* Drawer content */}
+              <div className="flex-1 overflow-hidden p-4">
+                {drawerTab === 'audio'
+                  ? <AudioSidebar audioFiles={audioFiles} />
+                  : <ChunkLog events={events} />
+                }
+              </div>
+            </>
+          )}
         </div>
       </main>
 
