@@ -4,18 +4,39 @@
  * Renders one committed sentence pair: English source on top, target-language
  * translation below.  The card reflects pipeline stage via a status badge:
  *
- *   translating  → HI row shows a three-dot shimmer skeleton
- *   tts          → HI row visible, TTS row shows a spinner
- *   done         → HI row visible, TTS row shows filename + latency badge
+ *   translating  → target-lang row shows a three-dot shimmer skeleton
+ *   tts          → target-lang row visible, TTS row shows a spinner
+ *   done         → target-lang row visible, TTS row shows filename + latency badge
  *
  * Props
  * -----
- * entry   {object}   { chunkId, text, hi, ttsFile, latencyMs, status }
+ * entry   {object}   { chunkId, text, translationText, targetLang, ttsFile, latencyMs, status }
  *   status: 'translating' | 'tts' | 'done'
  * opacity {number}   0–1 fade applied to older cards
  */
 export function TranscriptCard({ entry, opacity = 1 }) {
-  const { text, hi, ttsFile, latencyMs, status } = entry
+  const { text, translationText, targetLang, ttsFile, latencyMs, status } = entry
+
+  const uiTagMap = {
+    hin: 'HI',
+    guj: 'GU',
+    tam: 'TA',
+    tel: 'TE',
+    kan: 'KA',
+    ben: 'BN',
+    mal: 'ML',
+    mar: 'MR',
+    en: 'EN',
+    hi: 'HI',
+    gu: 'GU',
+    ta: 'TA',
+    te: 'TE',
+    ka: 'KA',
+    bn: 'BN',
+    ml: 'ML',
+    mr: 'MR',
+  }
+  const langTag = uiTagMap[String(targetLang || '').toLowerCase()] ?? String(targetLang || '--').slice(0, 2).toUpperCase()
 
   return (
     <div
@@ -40,13 +61,13 @@ export function TranscriptCard({ entry, opacity = 1 }) {
         </p>
       </div>
 
-      {/* ── HI row ─────────────────────────────────────────────────── */}
+      {/* ── Target-language row ─────────────────────────────────────── */}
       <div className="flex items-start gap-2">
         <span
           className="text-[10px] font-mono font-semibold mt-0.5 shrink-0 w-6 text-center rounded"
           style={{ color: 'var(--accent-purple)', background: 'rgba(155,109,255,0.12)', padding: '1px 4px' }}
         >
-          HI
+          {langTag}
         </span>
         {status === 'translating' ? (
           /* Shimmer skeleton while translation is pending */
@@ -69,7 +90,7 @@ export function TranscriptCard({ entry, opacity = 1 }) {
             style={{ color: 'var(--accent-purple)', direction: 'auto' }}
             dir="auto"
           >
-            {hi}
+            {translationText}
           </p>
         )}
       </div>

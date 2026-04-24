@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { TranscriptFeed }  from './components/TranscriptFeed'
 import { ChunkLog }        from './components/ChunkLog'
@@ -32,11 +32,17 @@ export default function App() {
   const [paused, setPaused]                 = useState(false)
   const [sourceLang, setSourceLang]         = useState('en')
   const [targetLang, setTargetLang]         = useState('hin')
+  const targetLangRef                        = useRef(targetLang)
+  const pendingTranslationsRef               = useRef(new Map())
+
+  useEffect(() => {
+    targetLangRef.current = targetLang
+  }, [targetLang])
 
   // ── Transcription ───────────────────────────────────────────────
   const [partialText, setPartialText] = useState('')
   const [flushing, setFlushing]       = useState(false)
-  // Each entry: { chunkId, text, hi, ttsFile, latencyMs, status }
+  // Each entry: { chunkId, text, translationText, targetLang, ttsFile, latencyMs, status }
   // status: 'translating' | 'tts' | 'done'
   const [confirmedEntries, setConfirmedEntries] = useState([])
 
@@ -83,17 +89,21 @@ export default function App() {
       case 'sentence_flushed': {
         setFlushing(true)
         setTimeout(() => {
+          const pending = pendingTranslationsRef.current.get(event.chunk_id)
+          if (pending) pendingTranslationsRef.current.delete(event.chunk_id)
+
           setConfirmedEntries(prev => [...prev, {
             chunkId:   event.chunk_id,
             text:      event.text,
-            hi:        null,
+            translationText: pending?.text ?? null,
+            targetLang: pending?.lang ?? targetLangRef.current,
             ttsFile:   null,
             latencyMs: null,
-            status:    'translating',
+            status:    pending ? 'tts' : 'translating',
           }])
           setPartialText('')
           setFlushing(false)
-        }, 300)
+        }, 120)
         setStats(s => ({ ...s, sentenceCount: s.sentenceCount + 1 }))
         break
       }
@@ -104,14 +114,17 @@ export default function App() {
           const idx = prev.findLastIndex?.(e => e.chunkId === event.chunk_id)
             ?? [...prev].reverse().findIndex(e => e.chunkId === event.chunk_id)
           if (idx === -1) {
-            // Fallback: attach to the most recent entry still translating
-            const fallbackIdx = [...prev].reverse().findIndex(e => e.status === 'translating')
-            if (fallbackIdx === -1) return prev
-            const realIdx = prev.length - 1 - fallbackIdx
-            return prev.map((e, i) => i === realIdx ? { ...e, hi: event.text, status: 'tts' } : e)
+            // sentence_flushed card may not exist yet (UI insertion delay)
+            pendingTranslationsRef.current.set(event.chunk_id, {
+              text: event.text,
+              lang: event.lang ?? targetLangRef.current,
+            })
+            return prev
           }
           const realIdx = typeof prev.findLastIndex === 'function' ? idx : prev.length - 1 - idx
-          return prev.map((e, i) => i === realIdx ? { ...e, hi: event.text, status: 'tts' } : e)
+          return prev.map((e, i) => i === realIdx
+            ? { ...e, translationText: event.text, targetLang: event.lang ?? e.targetLang ?? targetLangRef.current, status: 'tts' }
+            : e)
         })
         setStats(s => ({ ...s, translationCount: s.translationCount + 1 }))
         break
@@ -123,20 +136,26 @@ export default function App() {
           const idx = prev.findLastIndex?.(e => e.chunkId === event.chunk_id)
             ?? [...prev].reverse().findIndex(e => e.chunkId === event.chunk_id)
           if (idx === -1) {
-            // Fallback: attach to most recent non-done entry
-            const fallbackIdx = [...prev].reverse().findIndex(e => e.status !== 'done')
-            if (fallbackIdx === -1) return prev
-            const realIdx = prev.length - 1 - fallbackIdx
-            return prev.map((e, i) =>
-              i === realIdx
-                ? { ...e, ttsFile: event.filename, latencyMs: event.latency_ms ?? null, status: 'done' }
-                : e
-            )
+            // If card was not inserted yet, keep translation payload for later attach.
+            if (event.text) {
+              pendingTranslationsRef.current.set(event.chunk_id, {
+                text: event.text,
+                lang: event.lang ?? targetLangRef.current,
+              })
+            }
+            return prev
           }
           const realIdx = typeof prev.findLastIndex === 'function' ? idx : prev.length - 1 - idx
           return prev.map((e, i) =>
             i === realIdx
-              ? { ...e, ttsFile: event.filename, latencyMs: event.latency_ms ?? null, status: 'done' }
+              ? {
+                ...e,
+                translationText: e.translationText ?? event.text ?? e.translationText,
+                targetLang: e.targetLang ?? event.lang ?? targetLangRef.current,
+                ttsFile: event.filename,
+                latencyMs: event.latency_ms ?? null,
+                status: 'done',
+              }
               : e
           )
         })
@@ -170,6 +189,7 @@ export default function App() {
           setPartialText('')
           setConfirmedEntries([])
           setAudioFiles([])
+          pendingTranslationsRef.current.clear()
         }
         break
       }

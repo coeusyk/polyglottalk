@@ -47,8 +47,8 @@ AUDIO_INPUT_LATENCY: str = os.environ.get("POLYGLOT_TALK_AUDIO_LATENCY", "high")
 # ── Sentence accumulation ───────────────────────────────────────────────────
 # ASR fragments are buffered until a natural sentence boundary is detected.
 # This reduces the number of MT calls and produces better TTS prosody.
-SENTENCE_BUFFER_TIMEOUT: float = 5.0   # flush after this many seconds of no new text
-SENTENCE_BUFFER_MAXWORDS: int = 25     # force-flush when buffer exceeds this many words
+SENTENCE_BUFFER_TIMEOUT: float = 2.2   # shorter hold reduces end-to-end conversational latency
+SENTENCE_BUFFER_MAXWORDS: int = 16     # flush earlier so MT/TTS process smaller segments
 
 # ── Queue ───────────────────────────────────────────────────────────────────
 QUEUE_MAXSIZE: int = 2            # backpressure limit per inter-stage queue
@@ -78,6 +78,15 @@ ASR_BEAM_SIZE: int = 1
 ASR_LANGUAGE: str = ASR_TRANSCRIBE_LANG_MAP[SOURCE_LANG]  # skip language-detection for speed
 
 ASR_STRIP_TRAILING_PERIOD: bool = True
+
+# ── ASR confidence gating ───────────────────────────────────────────────────
+# Suppress hallucinated English text that can appear during silence or when
+# source speech is in an unsupported language.  These thresholds mirror
+# Whisper-style heuristics: only reject when the model simultaneously signals
+# high no-speech probability and low text confidence.
+ASR_NO_SPEECH_PROB_THRESHOLD: float = 0.60
+ASR_LOW_LOGPROB_THRESHOLD: float = -1.00
+ASR_COMPRESSION_RATIO_THRESHOLD: float = 2.40
 
 # ── ASR tail-correction — short-term fix (issue #15) ───────────────────────
 # When a new ASR chunk has high word-level Jaccard overlap with the tail of
@@ -162,6 +171,7 @@ MARIANMT_MODEL_MAP: dict[str, str] = {
 # have no Helsinki-NLP opus-mt checkpoint.  Used with facebook/nllb-200-distilled-600M
 # which ships within the already-installed transformers library — no new dependency.
 NLLB_MODEL_ID: str = "facebook/nllb-200-distilled-600M"
+NLLB_MAX_LENGTH: int = 160   # cap decode length to reduce MT latency on long streaming segments
 NLLB_LANG_MAP: dict[str, str] = {
     "tam": "tam_Taml",   # Tamil
     "tel": "tel_Telu",   # Telugu

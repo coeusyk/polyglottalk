@@ -167,11 +167,11 @@ class ASREngine:
             # ── Transcribe ─────────────────────────────────────────────────
             t0 = time.perf_counter()
             if config.ASR_USE_WORD_TIMESTAMPS:
-                _words_with_ts = self._transcribe_with_timestamps(item.audio)
+                _words_with_ts, _asr_info = self._transcribe_with_timestamps_and_info(item.audio)
                 text = " ".join(w for w, _, _ in _words_with_ts).strip()
             else:
                 _words_with_ts = None
-                text = self._transcribe(item.audio)
+                text, _asr_info = self._transcribe_with_info(item.audio)
             elapsed = time.perf_counter() - t0
 
             if not text:
@@ -183,6 +183,15 @@ class ASREngine:
             if normalized in config.ASR_HALLUCINATION_BLOCKLIST:
                 logger.debug(
                     "Chunk #%d blocked hallucination: %r", item.chunk_id, text
+                )
+                continue
+
+            # ── Confidence gate (silence / non-speech hallucinations) ─────
+            if self._should_reject_from_asr_info(_asr_info):
+                logger.debug(
+                    "Chunk #%d rejected by ASR confidence gate: %r",
+                    item.chunk_id,
+                    text,
                 )
                 continue
 
@@ -515,7 +524,27 @@ class ASREngine:
 
     # ── Internal ────────────────────────────────────────────────────────────
 
-    def _transcribe(self, audio: np.ndarray) -> str:
+    @staticmethod
+    def _should_reject_from_asr_info(info: object | None) -> bool:
+        """Return True when ASR metadata indicates likely no-speech hallucination."""
+        if info is None:
+            return False
+
+        no_speech_prob = float(getattr(info, "no_speech_prob", 0.0) or 0.0)
+        avg_logprob = float(getattr(info, "avg_logprob", 0.0) or 0.0)
+        compression_ratio = float(getattr(info, "compression_ratio", 0.0) or 0.0)
+
+        likely_silence = (
+            no_speech_prob >= config.ASR_NO_SPEECH_PROB_THRESHOLD
+            and avg_logprob <= config.ASR_LOW_LOGPROB_THRESHOLD
+        )
+        likely_hallucination = (
+            compression_ratio >= config.ASR_COMPRESSION_RATIO_THRESHOLD
+            and avg_logprob <= config.ASR_LOW_LOGPROB_THRESHOLD
+        )
+        return likely_silence or likely_hallucination
+
+    def _transcribe_with_info(self, audio: np.ndarray) -> tuple[str, object | None]:
         """Run faster-whisper on a float32 16 kHz numpy array.
 
         The generator returned by model.transcribe() MUST be fully consumed
@@ -530,14 +559,24 @@ class ASREngine:
         )
         # faster-whisper normally returns ``(segments, info)``, but some
         # edge cases can yield just the segments iterable. Normalize both.
-        segments_gen = result[0] if isinstance(result, tuple) else result
+        if isinstance(result, tuple):
+            segments_gen = result[0]
+            info = result[1] if len(result) > 1 else None
+        else:
+            segments_gen = result
+            info = None
         # Drain the generator completely
         text = "".join(seg.text for seg in segments_gen).strip()
+        return text, info
+
+    def _transcribe(self, audio: np.ndarray) -> str:
+        """Backward-compatible text-only wrapper around _transcribe_with_info()."""
+        text, _ = self._transcribe_with_info(audio)
         return text
 
-    def _transcribe_with_timestamps(
+    def _transcribe_with_timestamps_and_info(
         self, audio: np.ndarray
-    ) -> list[tuple[str, float, float]]:
+    ) -> tuple[list[tuple[str, float, float]], object | None]:
         """Run faster-whisper with word_timestamps=True.
 
         Returns a list of ``(word, start_s, end_s)`` tuples where *start_s*
@@ -555,7 +594,12 @@ class ASREngine:
             condition_on_previous_text=False,
             word_timestamps=True,
         )
-        segments_gen = result[0] if isinstance(result, tuple) else result
+        if isinstance(result, tuple):
+            segments_gen = result[0]
+            info = result[1] if len(result) > 1 else None
+        else:
+            segments_gen = result
+            info = None
         words: list[tuple[str, float, float]] = []
         for seg in segments_gen:
             if seg.words:
@@ -563,6 +607,13 @@ class ASREngine:
                     word_text = w.word.strip()
                     if word_text:
                         words.append((word_text, float(w.start), float(w.end)))
+        return words, info
+
+    def _transcribe_with_timestamps(
+        self, audio: np.ndarray
+    ) -> list[tuple[str, float, float]]:
+        """Backward-compatible word-timestamp wrapper without metadata."""
+        words, _ = self._transcribe_with_timestamps_and_info(audio)
         return words
 
     def _put(self, segment: TextSegment) -> None:

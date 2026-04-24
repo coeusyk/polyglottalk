@@ -171,6 +171,8 @@ class TTSEngine:
                     _bc.emit({
                         "type": "tts_saved",
                         "chunk_id": item.chunk_id,
+                        "text": item.text,
+                        "lang": self._target_lang,
                         "filename": out_path.name,
                         "latency_ms": round(e2e * 1000),
                     })

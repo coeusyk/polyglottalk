@@ -8,7 +8,7 @@
  *
  * Props
  * -----
- * confirmedEntries {Array}   [{chunkId, text, hi, ttsFile, latencyMs, status}]
+ * confirmedEntries {Array}   [{chunkId, text, translationText, targetLang, ttsFile, latencyMs, status}]
  * partialText      {string}  Accumulating words for the current sentence
  * flushing         {boolean} True for 300ms while sentence animates out
  */
