@@ -1,197 +1,329 @@
-# PHASES.md — PolyglotTalk Development Roadmap
+# PolyglotTalk Development Roadmap
 
-> **Project:** Offline Speech-to-Speech Translation (S2ST)  
-> **Target**: IEEE Access journal submission    
-> **Long-term vision**: any-to-any language S2ST, fully offline 
+Project: Offline Speech-to-Speech Translation (S2ST) for Indic languages  
+Primary vision: A phone-to-phone translation call app — fully offline, no cloud APIs.  
+You speak in your language; the other person hears you in theirs, in real time.
+
+The desktop pipeline is a prototyping ground, not the product.  
+The desktop WAV-file output model exists only because desktop mic + speaker on the same machine creates an audio feedback loop. On phones with earpieces, this doesn't exist.
 
 ---
 
-## Phase 0 — Foundation (COMPLETE)
-**Goal:** Working EN→HIN cascade pipeline, offline, no cloud APIs.
+## Phase 0 – Foundation (COMPLETE)
 
-### Delivered
-- [x] faster-whisper ASR (base.en, int8) with overlapping chunk capture
-- [x] Argos Translate MT (en→hin)
-- [x] MMS-TTS (`facebook/mms-tts-hin`) on CUDA
-- [x] Sentence buffer with basic prefix/suffix deduplication
-- [x] WebSocket dashboard server with real-time transcript display
-- [x] Output WAV saving (`output/chunk_NNNN.wav`)
-- [x] Pipeline start/stop lifecycle management
+**Goal:** Prove the cascade works: mic → ASR → MT → TTS → audio. Offline. No cloud.
 
-### Known Debt Carried Forward
-- Sentence buffer is append-only; semantic restating causes double-speech (see Phase 1 fix)
-- Near-duplicate guard operates on full raw chunk text, not deduped text
+**Delivered:**
+
+- Chunked audio capture with configurable stride/overlap (`AudioCaptureThread`)
+- faster-whisper ASR (`base.en`, int8) with sentence buffering
+- Argos Translate MT for EN→HIN, fully offline
+- MMS-TTS (`facebook/mms-tts-hin`) on CUDA
+- Per-sentence WAV output (`output/chunk_NNNN.wav`) — workaround for desktop feedback issue
+- WebSocket dashboard + React frontend
+- Basic overlap deduplication (prefix/suffix word matching)
+- Pipeline start/stop lifecycle management
+
+**Known debt:**
+
+- Sentence buffer is append-only → semantic restatements cause double-speech (Phase 1 fix)
+- Near-duplicate guard on full raw chunk text, not deduped text
 - No word-level timestamps used despite faster-whisper supporting them
+- Dashboard shows EN and HI in disconnected panes, no per-sentence pairing
+
+**Status: DONE.**
 
 ---
 
-## Phase 1 — ASR Quality & Overlap Fix (CURRENT)
-**Goal:** Eliminate recurring double-speech artifacts from overlapping chunk boundaries.
-**Branch:** `multi-language-tts` (merge → develop when complete)
+## Phase 1 – ASR Quality: Fix Overlap Restatements (CURRENT)
 
-### Tasks
-- [x] Implement tail-replacement logic in `ASREngine.run`:
-  - Compare new chunk against last N words of `_sentence_buf`
-  - If Jaccard overlap > 0.6 and new chunk is a plausible restatement, replace tail instead of appending
-  - Log replacements at DEBUG level for observability
-- [x] Relax or remove full-chunk near-duplicate guard (currently 85% threshold on raw text)
-- [x] Add `_word_overlap_ratio(a, b)` helper to `asr_engine.py`
-- [x] Write regression test:
-  - Input: two consecutive chunks where chunk B restates chunk A's tail differently
-  - Assert: final `SENT` string contains only one version of the phrase
-- [x] Write unit test for `_deduplicate_overlap` edge cases (empty input, single word, identical chunks)
+**Goal:** Eliminate the recurring double-speech artifact from overlapping chunk boundaries.
 
-### Acceptance Criteria
-- Running the EN→HIN pipeline for 2 minutes of continuous speech produces no audible double-speech in TTS output
-- All new tests pass in CI
+### 1.1 Tail-replacement in sentence buffer
 
----
+Problem: Overlapping chunks + append-only `_sentence_buf` produce:  
+`"… and it is all and it is also converting it …"`
 
-## Phase 2 — Multi-Language Support (Indic-first)
-**Goal:** Extend pipeline to support additional Indic language pairs for the second language in the journal evaluation.
-**Minimum required for IEEE Access submission:** at least one additional language pair beyond EN→HIN.
+**Design:**
 
-### Language Pairs Planned
-| Pair | ASR | MT | TTS | Priority |
-|---|---|---|---|---|
-| EN → BEN (Bengali) | faster-whisper | Argos / MarianMT | MMS-TTS hin→ben | High |
-| EN → TAM (Tamil) | faster-whisper | Argos / MarianMT | MMS-TTS tam | High |
-| EN → TEL (Telugu) | faster-whisper | Argos | MMS-TTS tel | Medium |
-| HIN → BEN | faster-whisper (multilingual) | MarianMT | MMS-TTS ben | Medium |
+- Add `word_overlap_ratio(tail, new)` helper (Jaccard on word sets)
+- Before appending new ASR text, compare against last N words of `_sentence_buf`:
+  - If overlap ≥ 0.6 and `len(new) ≥ 0.7 * len(tail)` → **replace tail** (later take wins)
+  - Else → append as normal
+- Log replacements at DEBUG level
 
-### Tasks
-- [ ] Abstract `TTSEngine` to accept language code at runtime (not hardcoded `facebook/mms-tts-hin`)
-- [ ] Abstract `TranslatorEngine` to accept source/target language pair at runtime
-- [ ] Test Argos package availability for each planned language pair
-- [ ] Validate MMS-TTS model quality for BEN and TAM (listen test + RTF measurement)
-- [ ] Update CLI and dashboard to expose language pair selector
-- [ ] Run at least one full end-to-end test per new language pair
+**Exit criteria:**
 
-### Note
-Any-to-any language support (e.g., non-Indic pairs, low-resource languages beyond Indic) is long-term future work and will not be in scope for the journal submission. It will be described in the Future Work section of the paper.
+- 2+ minutes of continuous speech: zero audible semantic restatements in TTS output
+- Unit tests: "and it is all" + "and it is also converting it" → only one phrasing in `SENT`
+
+### 1.2 No mid-word flushes
+
+- Introduce `pending_flush` state: wait one stride window before committing silence
+- Strip trailing hallucination tokens (`-`, `...`) before committing a sentence
+
+### 1.3 Paired transcript UI
+
+- Replace split panes with a single `TranscriptFeed`: one card per sentence
+- Each card: EN source row + HI translation row (skeleton while pending) + latency badge
+- Move AudioSidebar + EventLog into collapsible right drawer
+
+**Bar for completion:** This is v0.2. Ship it when double-speech is gone and the UI is readable.
 
 ---
 
-## Phase 3 — Benchmarking & Evaluation (Journal-critical)
-**Goal:** Produce the controlled experiment results required for IEEE Access. Every claim in the paper must trace to a row in these tables.
+## Phase 2 – Streaming Playback & Latency Instrumentation (Desktop)
 
-### Experiment Suite
+**Goal:** Make the desktop pipeline feel live, and measure where time goes.  
+This is foundational work before mobile; you need working real-time playback before P2P.
 
-#### 3A — ASR Model Comparison
-- Models: `base.en`, `small.en`, `medium.en` (int8, faster-whisper)
-- Metric: WER on a fixed Hindi-accented English test set (minimum 50 utterances, ~5 min audio)
-- Controlled variable: all other pipeline components held constant
-- [ ] Collect or curate test audio corpus (Hindi-accented English speakers)
-- [ ] Run WER evaluation script for each model
-- [ ] Record: WER (%), model load time (s), inference RTF per chunk
+### 2.1 Streaming TTS playback
 
-#### 3B — MT Engine Comparison
-- Engines: Argos Translate vs MarianMT (same language pair)
-- Metric: BLEU score on a fixed 50-sentence test set (translated reference from a human or DeepL)
-- Controlled variable: same ASR output fed to both MT engines
-- [ ] Prepare 50-sentence EN→HIN test set with reference translations
-- [ ] Run BLEU evaluation for both engines
-- [ ] Record: BLEU, translation latency per sentence (ms)
+Current: TTS writes WAV files, manual playback. This is only acceptable in the prototype.
 
-#### 3C — TTS Engine Comparison
-- Engines: MMS-TTS (CUDA) vs MMS-TTS (CPU) vs AI4Bharat IndicF5 (if available)
-- Metric: RTF (real-time factor), Mean Opinion Score proxy (5-point informal rating by 3 listeners)
-- [ ] Record RTF for 10 fixed Hindi sentences each
-- [ ] Collect MOS proxy ratings
+**Design:**
 
-#### 3D — End-to-End Latency Breakdown
-- Measure per-stage latency: ASR → MT → TTS → audio playback start
-- Run on: GPU machine + CPU-only machine (to show deployment range)
-- 100-sentence continuous session, report mean ± std per stage
-- [ ] Implement per-stage timing instrumentation if not already present
-- [ ] Run on both hardware configs and record results
+- `AudioPlaybackThread`: consumes TTS outputs from a queue, plays via `sounddevice`
+- Maintains sentence ordering, cancels gracefully on stop
+- Keep optional WAV saving for debug
 
-#### 3E — Baseline Comparison (REQUIRED for journal)
-- Baseline A: Google Translate web + gTTS (cloud, online) — show accuracy parity at zero internet dependency
-- Baseline B: Simple cascade (Vosk ASR + MarianMT + pyttsx3) — show quality improvement of current stack
-- Metric: WER, BLEU, RTF, MOS proxy — same as above, same test sets
-- [ ] Implement Baseline B as a standalone script
-- [ ] Record all metrics for both baselines using the same test sets as 3A–3C
+**Note on the feedback problem:**  
+On desktop with a single mic+speaker, enabling auto-playback will cause the speaker output to be picked up by the mic → feedback loop → ASR picks up its own TTS output.  
+Solutions (pick one for testing):
+  - Use headphones during development testing
+  - Add a software VAD gate: suppress microphone capture while TTS is playing
+  - Add a simple "TTS playing" flag: pause `AudioCaptureThread` during playback
+  
+The right permanent solution is **mobile with earpiece**, where this problem doesn't exist.
 
-#### 3F — Overlap Correction Ablation
-- Compare: pipeline with tail-replacement (Phase 1) vs without
-- Metric: Repetition Rate (% of sentences with audible duplicate phrases, rated by human listener)
-- [ ] Define Repetition Rate measurement methodology
-- [ ] Run both conditions on the same 2-min audio session
-- [ ] Record Repetition Rate for each condition
+### 2.2 Per-stage latency instrumentation
 
-### Deliverables
-- `results/` directory with raw CSV outputs for each experiment
-- `benchmarks/` scripts that are reproducible (documented in README)
+- Timestamps for each stage: `t_capture → t_asr → t_mt → t_tts_start → t_tts_done`
+- WebSocket event per sentence with these numbers
+- Latency badge in transcript card: `ASR 0.8s | MT 0.1s | TTS 0.6s | Total 2.0s`
+- Log as JSONL in `results/latency_log.jsonl`
+
+**Exit criteria:**
+
+- Latency numbers visible in UI for every sentence
+- Auto-playback works with headphones connected
 
 ---
 
-## Phase 4 — Adaptive Deployment Tiers
-**Goal:** Make the pipeline viable on low-end CPU devices, not just CUDA workstations.
-**Relevance to journal:** Strengthens the "accessible, offline, low-resource" framing.
+## Phase 3 – Timestamp-based Overlap Resolution (Principled Fix)
 
-### Tiers
-| Tier | Hardware | ASR | MT | TTS |
-|---|---|---|---|---|
-| GPU | CUDA GPU ≥ 4GB VRAM | faster-whisper medium | Argos / MarianMT | MMS-TTS (CUDA) |
-| CPU-High | Modern CPU, 8+ GB RAM | faster-whisper small.en int8 | Argos | MMS-TTS (CPU) |
-| CPU-Low | Low-end CPU, 4 GB RAM | faster-whisper base.en int8 | Argos (lightweight) | AI4Bharat IndicTTS or espeak |
+**Goal:** Replace Phase 1's Jaccard heuristic with time-axis deduplication.
 
-### Tasks
-- [ ] Implement auto-detection of available hardware on startup
-- [ ] Select model config automatically based on detected tier
-- [ ] Validate CPU-Low tier runs in real-time (RTF < 1.0) on a constrained machine
-- [ ] Document tier selection logic in README
+**Design:**
 
----
+- Enable `word_timestamps=True` in faster-whisper
+- Maintain `cutoff_time` = end time of last committed word
+- For each new chunk: keep only words where `mid_time > cutoff_time + ε`
+- Update `cutoff_time` as words are committed
 
-## Phase 5 — Paper Writing (IEEE Access)
-**Goal:** Submit to IEEE Access. Paper is a journal article, not a conference short paper.
+**Exit criteria:**
 
-### Paper Structure (target ~8,000 words)
-1. Abstract
-2. Introduction — language barrier problem, Indic language gap, offline constraint motivation
-3. Related Work — prior S2ST systems, Whisper/MMS-TTS/Argos literature, Indic NLP landscape
-4. System Architecture — cascade design, component interfaces, overlap correction design
-5. Experimental Setup — hardware, datasets, metrics definitions
-6. Results — tables from Phase 3 experiments (3A–3F), all with baselines
-7. Discussion — tradeoffs, failure modes, what Phase 2 languages revealed
-8. Limitations — current language scope, MOS proxy vs full MOS study, latency on very low-end hardware
-9. Future Work — any-to-any language support, P2P real-time streaming, end-to-end neural S2ST
-10. Conclusion
-
-### Limitations to be honest about
-- MOS proxy is informal; a full crowd-sourced MOS study is out of scope
-- EN→HIN is the primary evaluated pair; other Indic pairs are preliminary
-- Any-to-any language is a future goal, not a current claim
-
-### Future Work section must include
-- Any-to-any language S2ST (the long-term vision, acknowledged here but deferred)
-- P2P real-time streaming architecture
-- End-to-end neural S2ST (E2E models like SeamlessM4T as potential replacement for cascade)
-- On-device quantised models for sub-1W edge hardware
-
-### Submission Checklist
-- [ ] IEEE LaTeX template (`IEEEtran`) — use Overleaf
-- [ ] All figures at 300 DPI minimum, IEEE column width
-- [ ] All tables reproducible from `results/` CSVs
-- [ ] Author affiliations and ORCID IDs confirmed
-- [ ] Check institution IEEE Open Access agreement (waives $1,995 APC)
-- [ ] Cover letter drafted
-- [ ] Verify journal scope match: IEEE Access — broad applied engineering, open access
+- Overlap duplicates eliminated without relying on text similarity
+- Monotonically increasing word timestamps in logs
+- No regressions on Phase 1 acceptance criteria
 
 ---
 
-## Version Tags
+## Phase 4 – Hardware Tiers (CPU / GPU / Low-end)
 
-| Tag | Meaning |
-|---|---|
-| `v0.1` | Phase 0 complete — working EN→HIN pipeline |
-| `v0.2` | Phase 1 complete — overlap fix landed, regression tests passing |
-| `v0.3` | Phase 2 complete — minimum 2 Indic language pairs working |
-| `v1.0` | Phase 3 complete — all benchmarks run, paper-ready results |
-| `v1.0-submit` | Phase 5 complete — IEEE Access submission ready |
+**Goal:** Prove the pipeline degrades gracefully on weaker hardware —  
+specifically what a student or rural user would actually run this on.
+
+### The three tiers
+
+| Tier | Target device | ASR model | TTS engine |
+|---|---|---|---|
+| **GPU** | Dev machine, CUDA ≥4 GB | `medium.en` int8 | MMS-TTS CUDA |
+| **CPU-High** | Modern laptop ~8 GB RAM | `small.en` int8 | MMS-TTS CPU |
+| **CPU-Low** | Budget laptop 4 GB RAM | `base.en` int8 | AI4Bharat Indic-TTS or espeak-ng |
+
+### On approximating low-end hardware
+
+You can use `--memory=4g` Docker or cgroups CPU pinning to stress-test robustness (crash / memory blow-up), but this does **not** accurately replicate slow single-core CPU speed of a 2019 budget phone or laptop.  
+For any claim about CPU-Low tier, test on an actual low-end device eventually.
+
+**Tasks:**
+
+- `--tier [gpu|cpu-high|cpu-low|auto]` CLI flag
+- `auto`: detect CUDA, run a short TTS RTF probe, select tier, log decision
+- Run a fixed 50-sentence test per tier, capture RTF and E2E latency
+- Output `results/tier_summary.csv`
+
+**Exit criteria:**
+
+- All three tiers run end-to-end
+- CPU-Low stays below RTF ≈ 1.0 for short sentences
 
 ---
 
-*PHASES.md is a living document. Update task checkboxes on each merge to develop.*
+## Phase 5 – Multi-Language Support (Indic-first)
+
+**Goal:** Architecture supports runtime language pair selection, not hard-coded EN→HI.
+
+**Starting pairs:** EN→BEN (Bengali), EN→TAM (Tamil)
+
+**Tasks:**
+
+- `MMSTTS_MODEL_MAP`: ISO 639-3 → MMS-TTS model IDs
+- `ARGOS_LANG_MAP`: ISO 639-3 → Argos 2-letter codes
+- Translator/TTS accept `(src_lang, tgt_lang)` at runtime
+- Dashboard language selector → pipeline restart with new models
+
+**Exit criteria:**
+
+- EN→BEN and EN→TAM run end-to-end
+- Language switch from UI works cleanly (full pipeline teardown + restart)
+
+---
+
+## Phase 6 – P2P Call Mode (THE Core Feature)
+
+This is what PolyglotTalk actually is: a translation call app.
+
+### The problem being solved
+
+Today: A speaks Hindi → gets translated to English → Person B hears English (and vice versa).  
+Current barriers: speech feedback loop, single-machine pipeline, no audio transport.  
+All of those go away with a phone-to-phone call model.
+
+### 6.1 Architecture: two-phone call model
+
+```
+Phone A (Hindi speaker)                    Phone B (English speaker)
+─────────────────────────                  ─────────────────────────
+mic → ASR (HI) → MT (HI→EN)               mic → ASR (EN) → MT (EN→HI)
+    → compressed stream ─────────────────────→ TTS (HI) → earpiece
+earpiece ←── TTS (EN) ←──────────────────── compressed stream ←
+```
+
+Each phone runs the **full pipeline** for its speaker's language.  
+Audio output goes to earpiece/headphone → no mic feedback.  
+Network: start with LAN/WiFi; eventually mobile data.
+
+### 6.2 Two transport modes (build in order)
+
+**Mode A – Text transport (MT on sender):**
+
+- Sender: ASR + MT → sends translated text
+- Receiver: TTS locally
+- Pros: very low bandwidth (~50–200 bytes/sentence), receiver can customise TTS voice
+- Cons: receiver must have TTS for the target language installed
+
+**Mode B – Audio transport (full pipeline on sender):**
+
+- Sender: ASR + MT + TTS → sends Opus audio stream
+- Receiver: jitter buffer + playback only
+- Pros: receiver is truly thin (just a speaker), no model on receiver needed
+- Cons: higher bandwidth (~10–30 kbps), more latency-sensitive
+
+**Build Mode A first** — it's simpler and more flexible.
+
+### 6.3 Network stack (LAN-first)
+
+- No STUN/TURN/ICE for v1; LAN only
+- Simple TCP or UDP with sequence numbers and basic jitter buffer
+- Session protocol (minimal):
+  - `HELLO` (src_lang, tgt_lang, mode)
+  - `TEXT_FRAME` / `AUDIO_FRAME` (seq, payload)
+  - `BYE`
+- Upgrade to WebRTC or libp2p in a later version for NAT traversal
+
+### 6.4 Process structure
+
+Split the current monolith into two runnable modes:
+
+```
+python main.py --mode sender --lang hin --target en --peer 192.168.1.x
+python main.py --mode receiver --lang en --peer 192.168.1.x
+```
+
+- **Sender mode:** `AudioCapture → ASR → MT → (TTS if Mode B) → P2POutThread`
+- **Receiver mode:** `P2PInThread → (TTS if Mode A) → PlaybackThread`
+- Logs clearly state `Mode = sender | receiver`
+
+### 6.5 P2P metrics to instrument
+
+- Network one-way latency (sender TTS done → receiver playback start)
+- Effective E2E: speaker mic → listener earpiece
+- Jitter buffer depth over time
+
+### 6.6 Mobile target
+
+The P2P mode should eventually run as a mobile app.  
+The clearest path: **React Native + native module bridging** for audio capture/playback + Python backend via a bundled runtime, or rewrite the core pipeline in **Kotlin/Swift** using equivalent models (whisper.cpp for ASR, MMS-TTS ONNX for TTS).  
+For now, build and validate P2P on desktop (two processes on the same LAN). Mobile port is Phase 7.
+
+**Exit criteria for Phase 6:**
+
+- Two machines on the same WiFi:
+  - Machine A speaks Hindi → Machine B hears English within ≤ 3 s additional latency on top of local E2E
+  - Bidirectional (both machines are simultaneously sender and receiver)
+- Documented in README with exact run commands
+
+---
+
+## Phase 7 – Mobile App (End-game)
+
+**Goal:** PolyglotTalk as an actual phone app, not a desktop script.
+
+### 7.1 Architecture decision: two paths
+
+**Path A – Python backend + thin native UI**  
+- Keep Python pipeline, expose via local HTTP/gRPC
+- React Native or Flutter UI shell, calls local backend
+- Pros: reuse existing code; Cons: Python packaging on mobile is painful, large binary
+
+**Path B – Native reimplementation of hot path**  
+- whisper.cpp (C++) for ASR via JNI/FFI
+- Argos Translate compiled for mobile (has Android support via Python-for-Android or via native port)
+- MMS-TTS exported to ONNX, run via ONNX Runtime Mobile
+- Pros: much smaller, proper mobile perf; Cons: more work
+
+**Recommendation:** Start with Path A as a proof-of-concept on Android (easier to sideload), then evaluate Path B once the UX is validated.
+
+### 7.2 The call UX
+
+The app should feel like a regular phone call, not a "translation tool":
+
+- Dial / receive screen
+- Active call view: waveform for each speaker, running paired transcript
+- Auto-detects source language or lets user set it before the call
+- Works over WiFi (LAN P2P) initially; mobile data later
+
+### 7.3 Exit criteria
+
+- Two Android phones on WiFi: natural bilingual conversation with no more than 3–4 s perceived lag
+- App installable via APK (no Play Store required initially)
+
+---
+
+## Phase 8 – Paper / Public Release
+
+Write-up and release come after Phase 6 (P2P working). At that point you have something worth writing about that hasn't been done before.
+
+**High level:**
+
+- Tag `v1.0` once P2P on LAN is stable
+- Benchmarks: E2E latency (local + P2P), WER, BLEU, RTF per tier
+- Clean public repo with README, example configs, reproduce-metrics script
+
+---
+
+## Version milestones
+
+| Tag | Phase complete | State |
+|---|---|---|
+| `v0.1` | Phase 0 | ✅ |
+| `v0.2` | Phase 1 | double-speech fixed, paired UI |
+| `v0.3` | Phase 2 | streaming playback, latency numbers |
+| `v0.4` | Phase 3 | timestamp-based dedup |
+| `v0.5` | Phase 4 | three tiers wired and measured |
+| `v0.6` | Phase 5 | multi-language, runtime switching |
+| `v0.7` | Phase 6 | P2P call on LAN, bidirectional |
+| `v0.8` | Phase 7 | Android app, WiFi call |
+| `v1.0` | Phase 8 | paper-ready, public release |
