@@ -310,7 +310,7 @@ class Translator:
                 src_lang="eng_Latn",
                 tgt_lang=nllb_tgt,
                 device=device,
-                max_length=400,
+                max_length=config.NLLB_MAX_LENGTH,
             )
             logger.debug(
                 "NLLB backend ready: %s → %s (device=%d)",

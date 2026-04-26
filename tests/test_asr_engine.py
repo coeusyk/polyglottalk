@@ -18,6 +18,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from types import SimpleNamespace
 from typing import NamedTuple
 from unittest.mock import MagicMock, patch
 
@@ -337,3 +338,34 @@ class TestCommittedCutoff:
 
         assert accepted == []
         assert engine._committed_cutoff == pytest.approx(5.0)  # unchanged
+
+
+class TestASRConfidenceGate:
+    """Tests for metadata-based hallucination rejection."""
+
+    def test_rejects_high_no_speech_and_low_logprob(self):
+        info = SimpleNamespace(
+            no_speech_prob=config.ASR_NO_SPEECH_PROB_THRESHOLD + 0.1,
+            avg_logprob=config.ASR_LOW_LOGPROB_THRESHOLD - 0.1,
+            compression_ratio=1.2,
+        )
+        assert ASREngine._should_reject_from_asr_info(info) is True
+
+    def test_rejects_high_compression_and_low_logprob(self):
+        info = SimpleNamespace(
+            no_speech_prob=0.1,
+            avg_logprob=config.ASR_LOW_LOGPROB_THRESHOLD - 0.1,
+            compression_ratio=config.ASR_COMPRESSION_RATIO_THRESHOLD + 0.2,
+        )
+        assert ASREngine._should_reject_from_asr_info(info) is True
+
+    def test_keeps_confident_speech(self):
+        info = SimpleNamespace(
+            no_speech_prob=0.1,
+            avg_logprob=-0.2,
+            compression_ratio=1.1,
+        )
+        assert ASREngine._should_reject_from_asr_info(info) is False
+
+    def test_none_info_is_not_rejected(self):
+        assert ASREngine._should_reject_from_asr_info(None) is False

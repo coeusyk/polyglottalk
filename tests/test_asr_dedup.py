@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from polyglot_talk import config
+
 # Patch WhisperModel before importing ASREngine so the model is never loaded.
 with patch("faster_whisper.WhisperModel", MagicMock()):
     from polyglot_talk.asr_engine import ASREngine
@@ -148,3 +150,50 @@ def test_near_duplicate_guard_skips_chunk():
         f"Expected only the None sentinel in text_queue, got {item!r}"
     )
     assert engine._text_queue.empty(), "text_queue should be empty after consuming sentinel"
+
+
+# ── Tail-replacement regression test ─────────────────────────────────────────
+
+def test_tail_replacement_prevents_double_phrase():
+    """Tail correction replaces the buffer tail when Jaccard overlap exceeds threshold.
+
+    Scenario: buffer holds 'one two three'; chunk B transcribes to 'two three four'.
+    Jaccard({"one","two","three"}, {"two","three","four"}) = 2/3 ≈ 0.67 > 0.60 threshold.
+    Without tail correction the buffer would grow to 'one two three two three four'
+    (audible double-phrase). With tail correction the buffer is replaced with
+    'two three four', which is the only text in the flushed TextSegment.
+    """
+    engine = _make_engine()
+
+    # Pre-seed the sentence buffer to simulate a prior chunk already accumulated.
+    # _last_text_time stays at 0.0 so _maybe_flush_timeout() returns early
+    # (the guard skips when last_text_time <= 0), leaving the buffer intact.
+    engine._sentence_buf = ["one two three"]
+    engine._sentence_chunk_id = 10
+
+    # Chunk B: re-transcribes the overlapping tail ("two three") plus new content.
+    chunk_b = AudioChunk(chunk_id=11, audio=_loud_audio())
+    engine._transcribe = MagicMock(return_value="two three four")
+
+    # Silent chunk triggers the silence-detection flush path.
+    silent_chunk = AudioChunk(chunk_id=12, audio=np.zeros(1024, dtype=np.float32))
+
+    engine._audio_queue.put(chunk_b)
+    engine._audio_queue.put(silent_chunk)
+    engine._audio_queue.put(None)  # shutdown sentinel
+
+    # Force text-based dedup path so _transcribe() is used (not timestamp path).
+    with patch.object(config, "ASR_USE_WORD_TIMESTAMPS", False):
+        engine.run()
+
+    segment = engine._text_queue.get_nowait()
+    assert segment is not None, "Expected a TextSegment flushed by silence detection"
+    text = segment.text
+    assert "one two three two three" not in text, (
+        f"Double-phrase detected — tail correction did not fire: {text!r}"
+    )
+    assert "two three four" in text, (
+        f"Expected corrected tail 'two three four' in flushed segment: {text!r}"
+    )
+    sentinel = engine._text_queue.get_nowait()
+    assert sentinel is None, "Expected shutdown sentinel after segment"
