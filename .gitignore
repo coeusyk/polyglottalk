@@ -10,3 +10,5 @@ dev-clean
 output/
 prompts
 tests/test_output.wav
+
+.env

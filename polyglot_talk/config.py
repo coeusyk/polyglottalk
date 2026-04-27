@@ -33,9 +33,13 @@ CHUNK_OVERLAP: float = 1.0        # seconds of overlap between consecutive chunk
 OVERLAP_SAMPLES: int = int(SAMPLE_RATE * CHUNK_OVERLAP)  # 16 000 samples (~2.5 words)
 STRIDE_SAMPLES: int = BLOCK_SIZE - OVERLAP_SAMPLES        # 24 000 samples
 
-# WSLg RDP audio bridge delivers lower amplitude than native Linux mics.
-# Measured speech RMS ~0.0003; true silence ~0.00001. Threshold at 0.0001.
-RMS_SILENCE_THRESHOLD: float = 0.0001  # chunks below this RMS are dropped
+# WSLg RDP bridge attenuates mic amplitude heavily (speech RMS ~0.0003).
+# Native laptop/desktop mics sit much higher (speech RMS ~0.03–0.15,
+# noise floor ~0.001–0.005). Default 0.008 suits native mics; set
+# POLYGLOT_TALK_RMS_THRESHOLD=0.0001 in .env when running under WSLg.
+RMS_SILENCE_THRESHOLD: float = float(
+    os.environ.get("POLYGLOT_TALK_RMS_THRESHOLD", "0.008")
+)
 
 # ── Microphone / PortAudio stability ────────────────────────────────────────
 # WSLg and some Linux PulseAudio devices expose a 44.1 kHz native mic even
