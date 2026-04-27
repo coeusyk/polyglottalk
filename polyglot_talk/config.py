@@ -35,10 +35,22 @@ STRIDE_SAMPLES: int = BLOCK_SIZE - OVERLAP_SAMPLES        # 24 000 samples
 
 # WSLg RDP bridge attenuates mic amplitude heavily (speech RMS ~0.0003).
 # Native laptop/desktop mics sit much higher (speech RMS ~0.03–0.15,
-# noise floor ~0.001–0.005). Default 0.008 suits native mics; set
-# POLYGLOT_TALK_RMS_THRESHOLD=0.0001 in .env when running under WSLg.
-RMS_SILENCE_THRESHOLD: float = float(
-    os.environ.get("POLYGLOT_TALK_RMS_THRESHOLD", "0.008")
+# noise floor ~0.001–0.005). Default 0.008 suits native mics; export
+# POLYGLOT_TALK_RMS_THRESHOLD=0.0001 when running under WSLg.
+def _get_float_env(name: str, default: float) -> float:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise SystemExit(
+            f"Invalid value for {name}: {raw_value!r}. Expected a floating-point number."
+        ) from exc
+
+
+RMS_SILENCE_THRESHOLD: float = _get_float_env(
+    "POLYGLOT_TALK_RMS_THRESHOLD", 0.008
 )
 
 # ── Microphone / PortAudio stability ────────────────────────────────────────
